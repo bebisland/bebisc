@@ -34,6 +34,16 @@ static ASTNode *identifier(const char *name) {
   return node;
 }
 
+static const char *id_string(ASTNode *value) {
+  if (value == NULL)
+    return NULL;
+  if (value->type == NODE_STRING_LITERAL)
+    return value->decl.string_value;
+  if (value->type == NODE_IDENTIFIER)
+    return value->decl.identifier.name;
+  return NULL;
+}
+
 static ASTNode *parse_value(Parser *parser) {
   Token token = peek(parser);
 
@@ -142,7 +152,7 @@ static ASTNode *parse_struct(Parser *parser) {
 }
 
 static ASTNode *parse_handler(Parser *parser) {
-  advance(parser);
+  Token keyword = advance(parser);
 
   if (!match(parser, TOKEN_LPAREN))
     return NULL;
@@ -150,21 +160,22 @@ static ASTNode *parse_handler(Parser *parser) {
   Token type_name = advance(parser);
 
   ASTNode *node = ast_node_new(NODE_EVENT_HANDLER);
+  node->line = keyword.line;
   node->decl.event_handler.type_name = strdup(type_name.lex);
-  node->decl.event_handler.params = NULL;
+  node->decl.event_handler.id = NULL;
   node->decl.event_handler.body = NULL;
 
-  ASTNode *params_tail = NULL;
-  while (match(parser, TOKEN_COMMA)) {
-    Token param_name = advance(parser);
-
-    ASTNode *param = ast_node_new(NODE_HANDLER_PARAM);
-    param->decl.handler_param.name = strdup(param_name.lex);
-    param->decl.handler_param.value = NULL;
-    if (match(parser, TOKEN_ASSIGN))
-      param->decl.handler_param.value = parse_value(parser);
-
-    append(&node->decl.event_handler.params, &params_tail, param);
+  // optional: id="..."
+  if (match(parser, TOKEN_COMMA)) {
+    Token name = advance(parser);
+    if (strcmp(name.lex, "id") != 0)
+      return NULL;
+    if (!match(parser, TOKEN_ASSIGN))
+      return NULL;
+    const char *id = id_string(parse_value(parser));
+    if (id == NULL)
+      return NULL;
+    node->decl.event_handler.id = strdup(id);
   }
 
   if (!match(parser, TOKEN_RPAREN))
@@ -189,7 +200,7 @@ static ASTNode *parse_handler(Parser *parser) {
 }
 
 static ASTNode *parse_emit(Parser *parser) {
-  advance(parser);
+  Token keyword = advance(parser);
 
   if (!match(parser, TOKEN_LPAREN))
     return NULL;
@@ -197,19 +208,51 @@ static ASTNode *parse_emit(Parser *parser) {
   Token type_name = advance(parser);
 
   ASTNode *node = ast_node_new(NODE_EMIT);
+  node->line = keyword.line;
   node->decl.emit.type_name = strdup(type_name.lex);
   node->decl.emit.args = NULL;
 
   ASTNode *tail = NULL;
-  while (match(parser, TOKEN_COMMA)) {
-    Token arg_name = advance(parser);
-    if (!match(parser, TOKEN_ASSIGN))
-      return NULL;
 
-    ASTNode *arg = ast_node_new(NODE_EMIT_ARG);
-    arg->decl.emit_arg.name = strdup(arg_name.lex);
-    arg->decl.emit_arg.value = parse_value(parser);
-    append(&node->decl.emit.args, &tail, arg);
+  //   pirt(Type, {field=value, ...} [, id="..."])
+  while (match(parser, TOKEN_COMMA)) {
+    if (match(parser, TOKEN_LBRACE)) {
+      while (!check(parser, TOKEN_RBRACE) && !is_at_end(parser)) {
+        Token name = advance(parser);
+        if (!match(parser, TOKEN_ASSIGN))
+          return NULL;
+
+        ASTNode *value = parse_value(parser);
+        if (value == NULL)
+          return NULL;
+
+        ASTNode *arg = ast_node_new(NODE_EMIT_ARG);
+        arg->decl.emit_arg.name = strdup(name.lex);
+        arg->decl.emit_arg.value = value;
+        append(&node->decl.emit.args, &tail, arg);
+
+        if (!match(parser, TOKEN_COMMA))
+          break;
+      }
+      if (!match(parser, TOKEN_RBRACE))
+        return NULL;
+    } else if (check(parser, TOKEN_IDENTIFIER)) {
+      // named arg
+      Token name = advance(parser);
+      if (!match(parser, TOKEN_ASSIGN))
+        return NULL;
+
+      ASTNode *value = parse_value(parser);
+      if (value == NULL)
+        return NULL;
+
+      ASTNode *arg = ast_node_new(NODE_EMIT_ARG);
+      arg->decl.emit_arg.name = strdup(name.lex);
+      arg->decl.emit_arg.value = value;
+      append(&node->decl.emit.args, &tail, arg);
+    } else {
+      return NULL;
+    }
   }
 
   if (!match(parser, TOKEN_RPAREN))
@@ -219,7 +262,7 @@ static ASTNode *parse_emit(Parser *parser) {
 }
 
 static ASTNode *parse_print(Parser *parser) {
-  advance(parser);
+  Token keyword = advance(parser);
 
   if (!match(parser, TOKEN_LPAREN))
     return NULL;
@@ -232,6 +275,7 @@ static ASTNode *parse_print(Parser *parser) {
     return NULL;
 
   ASTNode *node = ast_node_new(NODE_PRINT_STMT);
+  node->line = keyword.line;
   node->decl.print_stmt.value = value;
 
   return node;

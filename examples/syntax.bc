@@ -5,12 +5,13 @@ pudra MilkType {
 }
 
 petibor Milk {
+    owner: ciklet
     type: MilkType
     count: bonibon
 }
 
-kokla(Milk, id="cikolatali_sutler", count, type) {
-    cikle("{count} cikolatali sutum var")
+kokla(Milk, id="cikolatali_sutler") {
+    cikle("{owner} {count} sutu var")
 }
 
-pirt(Milk, id="cikolatali_sutler", count=3, type=MilkType.Cikolata)
+pirt(Milk, { owner="bebis", count=3, type=MilkType.Cikolata }, id="cikolatali_sutler")

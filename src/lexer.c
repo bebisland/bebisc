@@ -21,6 +21,8 @@ static TokenType check_keyword(const char *text) {
     return TOKEN_FALIM;
   if (strcmp(text, "pamukseker") == 0)
     return TOKEN_PAMUKSEKER;
+  if (strcmp(text, "ciklet") == 0)
+    return TOKEN_CIKLET;
   if (strcmp(text, "true") == 0 || strcmp(text, "false") == 0)
     return TOKEN_BOOL;
   return TOKEN_IDENTIFIER;

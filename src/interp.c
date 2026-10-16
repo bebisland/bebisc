@@ -34,8 +34,14 @@ typedef struct Handler {
   struct Handler *next;
 } Handler;
 
-static void emit_event(ASTNode *emit, Handler *handlers);
-static void exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers);
+typedef struct Struct {
+  ASTNode *node;
+  struct Struct *next;
+} Struct;
+
+static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs);
+static int exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers,
+                     Struct *structs);
 
 static Value value_from_node(ASTNode *node) {
   Value value = {VALUE_STRING, 0, 0.0f, 0, "", NULL};
@@ -44,27 +50,27 @@ static Value value_from_node(ASTNode *node) {
     return value;
 
   switch (node->type) {
-  case NODE_NUMBER_LITERAL: // 3
+  case NODE_NUMBER_LITERAL:
     value.type = VALUE_NUMBER;
     value.number = node->decl.number_value;
     break;
-  case NODE_FLOAT_LITERAL: // 2.5
+  case NODE_FLOAT_LITERAL:
     value.type = VALUE_FLOAT;
     value.float_value = node->decl.float_value;
     break;
-  case NODE_BOOL_LITERAL: // true / false
+  case NODE_BOOL_LITERAL:
     value.type = VALUE_BOOL;
     value.bool_value = node->decl.bool_value;
     break;
-  case NODE_STRING_LITERAL: // "..."
+  case NODE_STRING_LITERAL:
     value.type = VALUE_STRING;
     value.string = node->decl.string_value;
     break;
-  case NODE_IDENTIFIER: // name
+  case NODE_IDENTIFIER:
     value.type = VALUE_STRING;
     value.string = node->decl.identifier.name;
     break;
-  case NODE_MEMBER_ACCESS: // enum.member
+  case NODE_MEMBER_ACCESS:
     value.type = VALUE_MEMBER;
     value.string = node->decl.member_access.object->decl.identifier.name;
     value.member = node->decl.member_access.member;
@@ -129,12 +135,177 @@ static ASTNode *find_emit_arg(ASTNode *args, const char *name) {
   return NULL;
 }
 
-static ASTNode *find_handler_param(ASTNode *params, const char *name) {
-  for (ASTNode *param = params; param != NULL; param = param->next) {
-    if (strcmp(param->decl.handler_param.name, name) == 0)
-      return param;
+static ASTNode *find_field(ASTNode *fields, const char *name) {
+  for (ASTNode *field = fields; field != NULL; field = field->next) {
+    if (strcmp(field->decl.struct_field.name, name) == 0)
+      return field;
   }
   return NULL;
+}
+
+static ASTNode *find_field_len(ASTNode *fields, const char *name,
+                               size_t length) {
+  for (ASTNode *field = fields; field != NULL; field = field->next) {
+    if (strlen(field->decl.struct_field.name) == length &&
+        strncmp(field->decl.struct_field.name, name, length) == 0)
+      return field;
+  }
+  return NULL;
+}
+
+static ASTNode *find_struct_by_name(Struct *structs, const char *name) {
+  for (Struct *s = structs; s != NULL; s = s->next) {
+    if (strcmp(s->node->decl.struct_decl.name, name) == 0)
+      return s->node;
+  }
+  return NULL;
+}
+
+static int type_accepts(const char *type_name, Value value) {
+  if (strcmp(type_name, "bonibon") == 0)
+    return value.type == VALUE_NUMBER;
+  if (strcmp(type_name, "pamukseker") == 0)
+    return value.type == VALUE_FLOAT;
+  if (strcmp(type_name, "falim") == 0)
+    return value.type == VALUE_BOOL;
+  if (strcmp(type_name, "ciklet") == 0)
+    return value.type == VALUE_STRING;
+  return value.type == VALUE_MEMBER && strcmp(value.string, type_name) == 0;
+}
+
+static const char *value_type_name(Value value) {
+  switch (value.type) {
+  case VALUE_NUMBER:
+    return "bonibon";
+  case VALUE_FLOAT:
+    return "pamukseker";
+  case VALUE_BOOL:
+    return "falim";
+  case VALUE_STRING:
+    return "ciklet";
+  case VALUE_MEMBER:
+    return value.string;
+  }
+  return "?";
+}
+
+static int make_default(const char *type_name, Value *out) {
+  if (strcmp(type_name, "bonibon") == 0) {
+    *out = (Value){VALUE_NUMBER, 0, 0.0f, 0, "", NULL};
+    return 1;
+  }
+  if (strcmp(type_name, "pamukseker") == 0) {
+    *out = (Value){VALUE_FLOAT, 0, 0.0f, 0, "", NULL};
+    return 1;
+  }
+  if (strcmp(type_name, "falim") == 0) {
+    *out = (Value){VALUE_BOOL, 0, 0.0f, 0, "", NULL};
+    return 1;
+  }
+  if (strcmp(type_name, "ciklet") == 0) {
+    *out = (Value){VALUE_STRING, 0, 0.0f, 0, "", NULL};
+    return 1;
+  }
+  return 0;
+}
+
+static int check_field(ASTNode *schema, const char *name, ASTNode *value_node,
+                       int line) {
+  ASTNode *field = find_field(schema->decl.struct_decl.fields, name);
+  if (field == NULL) {
+    fprintf(stderr, "error: line %d: struct '%s' has no field '%s'\n", line,
+            schema->decl.struct_decl.name, name);
+    return 1;
+  }
+
+  if (value_node == NULL)
+    return 0;
+
+  Value value = value_from_node(value_node);
+  if (!type_accepts(field->decl.struct_field.type_name, value)) {
+    fprintf(stderr, "error: line %d: field '%s' expects %s, got %s\n", line,
+            name, field->decl.struct_field.type_name, value_type_name(value));
+    return 1;
+  }
+  return 0;
+}
+
+static int check_handler_body(ASTNode *handler, ASTNode *schema) {
+  int errors = 0;
+
+  for (ASTNode *stmt = handler->decl.event_handler.body; stmt != NULL;
+       stmt = stmt->next) {
+    if (stmt->type != NODE_PRINT_STMT)
+      continue;
+
+    ASTNode *value = stmt->decl.print_stmt.value;
+    if (value == NULL || value->type != NODE_STRING_LITERAL)
+      continue;
+
+    const char *text = value->decl.string_value;
+    for (int i = 0; text[i] != '\0'; i++) {
+      if (text[i] != '{')
+        continue;
+
+      int end = i + 1;
+      while (text[end] != '\0' && text[end] != '}')
+        end++;
+
+      if (text[end] != '}')
+        continue;
+
+      size_t len = (size_t)(end - i - 1);
+      if (find_field_len(schema->decl.struct_decl.fields, &text[i + 1], len) ==
+          NULL) {
+        fprintf(stderr, "error: line %d: unknown binding '{%.*s}'\n",
+                stmt->line, (int)len, &text[i + 1]);
+        errors++;
+      }
+      i = end;
+    }
+  }
+
+  return errors;
+}
+
+static int check_program(ASTNode *program, Struct *structs) {
+  int errors = 0;
+
+  for (ASTNode *node = program; node != NULL; node = node->next) {
+    if (node->type == NODE_EMIT) {
+      const char *type_name = node->decl.emit.type_name;
+      ASTNode *schema = find_struct_by_name(structs, type_name);
+
+      if (schema == NULL) {
+        fprintf(stderr, "error: line %d: unknown event type '%s'\n", node->line,
+                type_name);
+        errors++;
+        continue;
+      }
+
+      for (ASTNode *arg = node->decl.emit.args; arg != NULL; arg = arg->next) {
+        const char *name = arg->decl.emit_arg.name;
+        if (strcmp(name, "id") == 0)
+          continue;
+        errors +=
+            check_field(schema, name, arg->decl.emit_arg.value, node->line);
+      }
+    } else if (node->type == NODE_EVENT_HANDLER) {
+      const char *type_name = node->decl.event_handler.type_name;
+      ASTNode *schema = find_struct_by_name(structs, type_name);
+
+      if (schema == NULL) {
+        fprintf(stderr, "error: line %d: unknown event type '%s'\n", node->line,
+                type_name);
+        errors++;
+        continue;
+      }
+
+      errors += check_handler_body(node, schema);
+    }
+  }
+
+  return errors;
 }
 
 static const char *event_id(ASTNode *args) {
@@ -149,18 +320,36 @@ static const char *event_id(ASTNode *args) {
 }
 
 static int handler_matches(ASTNode *handler, const char *id) {
-  ASTNode *param = find_handler_param(handler->decl.event_handler.params, "id");
+  const char *expected = handler->decl.event_handler.id;
 
-  if (param == NULL || param->decl.handler_param.value == NULL)
+  if (expected == NULL)
     return 1;
-
-  Value expected = value_from_node(param->decl.handler_param.value);
-  if (expected.type != VALUE_STRING || id == NULL)
+  if (id == NULL)
     return 0;
-  return strcmp(expected.string, id) == 0;
+  return strcmp(expected, id) == 0;
 }
 
-static void print_template(const char *text, Binding *bindings) {
+static int print_template(const char *text, Binding *bindings, int line) {
+  for (int i = 0; text[i] != '\0'; i++) {
+    if (text[i] != '{')
+      continue;
+
+    int end = i + 1;
+    while (text[end] != '\0' && text[end] != '}')
+      end++;
+
+    if (text[end] != '}')
+      continue;
+
+    size_t len = (size_t)(end - i - 1);
+    if (bindings_find(bindings, &text[i + 1], len) == NULL) {
+      fprintf(stderr, "error: line %d: no value for '{%.*s}'\n", line, (int)len,
+              &text[i + 1]);
+      return 1;
+    }
+    i = end;
+  }
+
   for (int i = 0; text[i] != '\0'; i++) {
     if (text[i] != '{') {
       putchar(text[i]);
@@ -182,13 +371,41 @@ static void print_template(const char *text, Binding *bindings) {
     }
   }
   putchar('\n');
+  return 0;
 }
 
-static void emit_event(ASTNode *emit, Handler *handlers) {
+static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args) {
+  Binding *bindings = NULL;
+
+  for (ASTNode *field = schema->decl.struct_decl.fields; field != NULL;
+       field = field->next) {
+    const char *name = field->decl.struct_field.name;
+    const char *type = field->decl.struct_field.type_name;
+
+    ASTNode *arg = find_emit_arg(args, name);
+    Value value;
+
+    if (arg != NULL)
+      value = value_from_node(arg->decl.emit_arg.value);
+    else if (!make_default(type, &value))
+      continue;
+
+    bindings = bind_add(bindings, name, value);
+  }
+
+  return bindings;
+}
+
+static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs) {
   const char *type_name = emit->decl.emit.type_name;
   ASTNode *args = emit->decl.emit.args;
   const char *id = event_id(args);
 
+  ASTNode *schema = find_struct_by_name(structs, type_name);
+  if (schema == NULL)
+    return 0;
+
+  int errors = 0;
   for (Handler *h = handlers; h != NULL; h = h->next) {
     ASTNode *handler = h->node;
 
@@ -197,62 +414,92 @@ static void emit_event(ASTNode *emit, Handler *handlers) {
     if (!handler_matches(handler, id))
       continue;
 
-    Binding *bindings = NULL;
-    for (ASTNode *param = handler->decl.event_handler.params; param != NULL;
-         param = param->next) {
-      const char *name = param->decl.handler_param.name;
-      ASTNode *arg = find_emit_arg(args, name);
-
-      if (arg != NULL)
-        bindings =
-            bind_add(bindings, name, value_from_node(arg->decl.emit_arg.value));
-      else if (param->decl.handler_param.value != NULL)
-        bindings = bind_add(bindings, name,
-                            value_from_node(param->decl.handler_param.value));
-    }
-
-    exec_body(handler->decl.event_handler.body, bindings, handlers);
-
+    Binding *bindings = bind_handler_fields(schema, args);
+    errors += exec_body(handler->decl.event_handler.body, bindings, handlers,
+                        structs);
     bindings_free(bindings);
   }
+
+  return errors;
 }
 
-static void exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers) {
+static int exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers,
+                     Struct *structs) {
+  int errors = 0;
+
   for (; stmt != NULL; stmt = stmt->next) {
     if (stmt->type == NODE_PRINT_STMT)
-      print_template(stmt->decl.print_stmt.value->decl.string_value, bindings);
+      errors += print_template(stmt->decl.print_stmt.value->decl.string_value,
+                               bindings, stmt->line);
     else if (stmt->type == NODE_EMIT)
-      emit_event(stmt, handlers);
+      errors += emit_event(stmt, handlers, structs);
+  }
+
+  return errors;
+}
+
+static void free_structs(Struct *list) {
+  while (list != NULL) {
+    Struct *next = list->next;
+    free(list);
+    list = next;
   }
 }
 
-void run_program(ASTNode *program) {
+static void free_handlers(Handler *list) {
+  while (list != NULL) {
+    Handler *next = list->next;
+    free(list);
+    list = next;
+  }
+}
+
+int run_program(ASTNode *program) {
+  Struct *structs = NULL;
+  Struct *structs_tail = NULL;
+
   Handler *handlers = NULL;
   Handler *handlers_tail = NULL;
 
   for (ASTNode *node = program; node != NULL; node = node->next) {
-    if (node->type != NODE_EVENT_HANDLER)
-      continue;
+    if (node->type == NODE_STRUCT_DECL) {
+      Struct *s = malloc(sizeof(Struct));
+      s->node = node;
+      s->next = NULL;
 
-    Handler *handler = malloc(sizeof(Handler));
-    handler->node = node;
-    handler->next = NULL;
+      if (structs == NULL)
+        structs = s;
+      else
+        structs_tail->next = s;
+      structs_tail = s;
+    } else if (node->type == NODE_EVENT_HANDLER) {
+      Handler *handler = malloc(sizeof(Handler));
+      handler->node = node;
+      handler->next = NULL;
 
-    if (handlers == NULL)
-      handlers = handler;
-    else
-      handlers_tail->next = handler;
-    handlers_tail = handler;
+      if (handlers == NULL)
+        handlers = handler;
+      else
+        handlers_tail->next = handler;
+      handlers_tail = handler;
+    }
   }
 
+  int errors = check_program(program, structs);
+  if (errors > 0) {
+    free_structs(structs);
+    free_handlers(handlers);
+    return errors;
+  }
+
+  int run_errors = 0;
   for (ASTNode *node = program; node != NULL; node = node->next) {
     if (node->type == NODE_EMIT)
-      emit_event(node, handlers);
+      run_errors += emit_event(node, handlers, structs);
   }
 
-  while (handlers != NULL) {
-    Handler *next = handlers->next;
-    free(handlers);
-    handlers = next;
-  }
+  free_structs(structs);
+  free_handlers(handlers);
+
+  return run_errors;
 }

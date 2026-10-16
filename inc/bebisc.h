@@ -12,6 +12,7 @@ typedef enum {
   TOKEN_BONIBON,    // int
   TOKEN_FALIM,      // bool
   TOKEN_PAMUKSEKER, // float
+  TOKEN_CIKLET,     // string
 
   TOKEN_IDENTIFIER, // name for enum/struct/field vb.
   TOKEN_NUMBER,
@@ -67,6 +68,7 @@ typedef enum {
 
 typedef struct ASTNode {
   NodeType type;
+  int line;
 
   union {
     struct {
@@ -90,7 +92,7 @@ typedef struct ASTNode {
 
     struct {
       char *type_name;
-      struct ASTNode *params;
+      char *id;
       struct ASTNode *body;
     } event_handler;
 
@@ -144,6 +146,6 @@ Token advance(Parser *parser);
 ASTNode *parse_program(Parser *parser);
 
 // interp.c
-void run_program(ASTNode *program);
+int run_program(ASTNode *program);
 
 #endif // BEBISC_H

@@ -5,6 +5,7 @@
 ASTNode *ast_node_new(NodeType type) {
   ASTNode *node = (ASTNode *)malloc(sizeof(ASTNode));
   node->type = type;
+  node->line = 0;
   node->next = NULL;
   return node;
 }
@@ -64,8 +65,10 @@ void print_ast(ASTNode *node, int indent) {
              node->decl.struct_field.type_name);
       break;
     case NODE_EVENT_HANDLER:
-      printf("event handler: %s\n", node->decl.event_handler.type_name);
-      print_ast(node->decl.event_handler.params, indent + 2);
+      printf("event handler: %s", node->decl.event_handler.type_name);
+      if (node->decl.event_handler.id != NULL)
+        printf(" (id: %s)", node->decl.event_handler.id);
+      printf("\n");
       print_ast(node->decl.event_handler.body, indent + 2);
       break;
     case NODE_HANDLER_PARAM:

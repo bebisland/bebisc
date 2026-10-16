@@ -52,8 +52,8 @@ int main(int argc, char **argv) {
   print_ast(root, 0);
 #endif
 
-  run_program(root);
+  int status = run_program(root);
 
   free(source);
-  return 0;
+  return status > 0 ? 1 : 0;
 }
