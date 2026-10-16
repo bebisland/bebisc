@@ -40,4 +40,95 @@ typedef struct {
 
 Token *tokenize(const char *source, int *out_count);
 
+// ast.c
+typedef enum {
+  NODE_ENUM_DECL,   // pudra
+  NODE_ENUM_MEMBER, // enum case
+
+  NODE_STRUCT_DECL,  // petibor
+  NODE_STRUCT_FIELD, // field: type
+
+  NODE_EVENT_HANDLER, // kokla
+  NODE_HANDLER_PARAM, // bound field / id
+
+  NODE_PRINT_STMT, // cikle
+
+  NODE_EMIT,     // cikle
+  NODE_EMIT_ARG, // name = value
+
+  NODE_IDENTIFIER,
+  NODE_MEMBER_ACCESS, // enum.member
+
+  NODE_STRING_LITERAL,
+  NODE_NUMBER_LITERAL,
+  NODE_FLOAT_LITERAL,
+  NODE_BOOL_LITERAL,
+} NodeType;
+
+typedef struct {
+  NodeType type;
+
+  union {
+    struct {
+      char *name;
+      struct ASTNode *members;
+    } enum_decl;
+
+    struct {
+      char *name;
+    } enum_member;
+
+    struct {
+      char *name;
+      struct ASTNode *fields;
+    } struct_decl;
+
+    struct {
+      char *name;
+      char *type_name;
+    } struct_field;
+
+    struct {
+      char *type_name;
+      struct ASTNode *params;
+      struct ASTNode *body;
+    } event_handler;
+
+    struct {
+      char *name;
+      struct ASTNode *value;
+    } handler_param;
+
+    struct {
+      struct ASTNode *value;
+    } print_stmt;
+
+    struct {
+      char *type_name;
+      struct ASTNode *args;
+    } emit;
+
+    struct {
+      char *name;
+      struct ASTNode *value;
+    } emit_arg;
+
+    struct {
+      char *name;
+    } identifier;
+
+    struct {
+      struct ASTNode *object;
+      char *member;
+    } member_access;
+
+    char *string_value;
+    int number_value;
+    float float_value;
+    int bool_value;
+  } decl;
+
+  struct ASTNode *next;
+} ASTNode;
+
 #endif // BEBISC_H
