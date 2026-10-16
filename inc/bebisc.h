@@ -143,4 +143,7 @@ typedef struct {
 Token advance(Parser *parser);
 ASTNode *parse_program(Parser *parser);
 
+// interp.c
+void run_program(ASTNode *program);
+
 #endif // BEBISC_H

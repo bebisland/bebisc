@@ -1,6 +1,7 @@
 NAME        := bebisc
 LIB_STATIC  := lib$(NAME).a
 LIB_SHARED  := lib$(NAME).so
+CLI_BIN     := bebisc_cli
 
 SRC_DIR     := src
 INC_DIR     := inc
@@ -23,15 +24,15 @@ SO_LDFLAGS  := -shared -Wl,-soname,$(LIB_SHARED)
 MODE        ?= release
 
 ifeq ($(MODE),debug)
-    CFLAGS     += -O0 -g3 -DDEBUG
+    CFLAGS      += -O0 -g3 -DDEBUG
 endif
 
 ifeq ($(MODE),release)
-    CFLAGS     += -O2 -DNDEBUG
+    CFLAGS      += -O2 -DNDEBUG
 endif
 
 ifeq ($(MODE),asan)
-    CFLAGS     += -O0 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer
+    CFLAGS      += -O0 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer
     SO_LDFLAGS += -fsanitize=address,undefined
 endif
 
@@ -39,19 +40,23 @@ OBJ_S       := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/$(MODE)/static/%.o,$(SRCS)
 OBJ_D       := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/$(MODE)/shared/%.o,$(SRCS))
 DEPS        := $(OBJ_S:.o=.d) $(OBJ_D:.o=.d)
 
-.PHONY: all static shared deps clean debug release asan format lint help
+.PHONY: all static shared deps clean debug release asan format lint help cli
 
-all: static shared
+all: static shared cli
 
 static: $(LIB_STATIC)
 shared: $(LIB_SHARED)
 
+cli: $(CLI_BIN)
+
 $(LIB_STATIC): $(OBJ_S)
 	$(AR) rcs $@ $^
 
-$(LIB_SHARED): $(OBJ_D) $(SDL_LIB) $(CGLM_LIB)
-	$(CC) $(SO_LDFLAGS) $(OBJ_D) -o $@ \
-	      -L$(SDL_BUILD) -L$(CGLM_BUILD) -lm -lpthread -ldl
+$(LIB_SHARED): $(OBJ_D)
+	$(CC) $(SO_LDFLAGS) $(OBJ_D) -o $@ -lm -lpthread -ldl
+
+$(CLI_BIN): bebisc.c $(LIB_STATIC)
+	$(CC) $(CPPFLAGS) $(CFLAGS) bebisc.c -o $@ -L. -lbebisc -lm -lpthread -ldl
 
 $(BUILD_DIR)/$(MODE)/static/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
@@ -71,7 +76,7 @@ asan:
 	$(MAKE) MODE=asan
 
 clean:
-	rm -rf $(BUILD_DIR) $(LIB_STATIC) $(LIB_SHARED)
+	rm -rf $(BUILD_DIR) $(LIB_STATIC) $(LIB_SHARED) $(CLI_BIN)
 
 format:
 	clang-format -i $(shell find $(SRC_DIR) $(INC_DIR) -name '*.c' -o -name '*.h')
@@ -81,9 +86,10 @@ lint:
 
 help:
 	@echo "Available targets:"
-	@echo "  make          -> libbebisc.a + libbebisc.so (release)"
+	@echo "  make        -> libbebisc.a + libbebisc.so + cli (release)"
 	@echo "  make static   -> build libbebisc.a only"
 	@echo "  make shared   -> build libbebisc.so only"
+	@echo "  make cli      -> build bebisc CLI executable"
 	@echo "  make debug    -> debug build with -O0 -g3"
 	@echo "  make asan     -> build with AddressSanitizer + UBSan"
 	@echo "  make clean    -> remove build directory and libraries"

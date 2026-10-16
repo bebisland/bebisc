@@ -1,5 +1,5 @@
 compile_commands.json
-bebisc
+bebisc_cli
 build/
 .cache/
 
