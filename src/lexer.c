@@ -38,22 +38,22 @@ static void init_token_list(TokenList *list) {
   list->tokens = malloc(sizeof(Token) * (size_t)list->capacity);
 }
 
-static void add_token(TokenList *list, TokenType type, const char *lexeme,
+static void add_token(TokenList *list, TokenType type, const char *lex,
                       int line) {
   if (list->count >= list->capacity) {
     list->capacity *= 2;
     list->tokens =
         realloc(list->tokens, sizeof(Token) * (size_t)list->capacity);
   }
-  list->tokens[list->count++] = (Token){type, lexeme, line};
+  list->tokens[list->count++] = (Token){type, lex, line};
 }
 
 static char *slice(const char *source, int start, int end) {
   int length = end - start;
-  char *lexeme = malloc((size_t)length + 1);
-  memcpy(lexeme, &source[start], (size_t)length);
-  lexeme[length] = '\0';
-  return lexeme;
+  char *lex = malloc((size_t)length + 1);
+  memcpy(lex, &source[start], (size_t)length);
+  lex[length] = '\0';
+  return lex;
 }
 
 Token *tokenize(const char *source, int *out_count) {
@@ -159,10 +159,10 @@ Token *tokenize(const char *source, int *out_count) {
                               source[cursor] == '_')) {
         cursor++;
       }
-      char *lexeme = slice(source, start, cursor);
+      char *lex = slice(source, start, cursor);
 
-      TokenType type = check_keyword(lexeme);
-      add_token(&list, type, lexeme, line);
+      TokenType type = check_keyword(lex);
+      add_token(&list, type, lex, line);
       continue;
     }
 

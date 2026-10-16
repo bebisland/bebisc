@@ -65,7 +65,7 @@ typedef enum {
   NODE_BOOL_LITERAL,
 } NodeType;
 
-typedef struct {
+typedef struct ASTNode {
   NodeType type;
 
   union {
@@ -130,5 +130,17 @@ typedef struct {
 
   struct ASTNode *next;
 } ASTNode;
+
+ASTNode *ast_node_new(NodeType type);
+void print_ast(ASTNode *node, int indent);
+
+// parser.c
+typedef struct {
+  Token *tokens;
+  int current;
+} Parser;
+
+Token advance(Parser *parser);
+ASTNode *parse_program(Parser *parser);
 
 #endif // BEBISC_H
