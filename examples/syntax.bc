@@ -1,0 +1,16 @@
+pudra MilkType {
+    Cikolata,
+    Cilek,
+    Muz,
+}
+
+petibor Milk {
+    type: MilkType
+    count: bonibon
+}
+
+kokla(Milk, id="cikolatali_sutler", count, type) {
+    cikle("{count} cikolatali sutum var")
+}
+
+pirt(Milk, id="cikolatali_sutler", count=3, type=MilkType.Cikolata)

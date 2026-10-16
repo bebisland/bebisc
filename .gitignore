@@ -1,3 +1,8 @@
+compile_commands.json
+bebisc
+build/
+.cache/
+
 # Prerequisites
 *.d
 
