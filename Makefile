@@ -61,7 +61,7 @@ $(LIB_SHARED): $(OBJ_D)
 	$(CC) $(SO_LDFLAGS) $(OBJ_D) -o $@ -lm -lpthread -ldl
 
 $(CLI_BIN): bebisc.c $(LIB_STATIC)
-	$(CC) $(CPPFLAGS) $(CFLAGS) bebisc.c -o $@ -L. -lbebisc -Wl,-rpath,$(LIBDIR) -lm -lpthread -ldl
+	$(CC) $(CPPFLAGS) $(CFLAGS) bebisc.c -o $@ -L. -lbebisc -Wl,-rpath,'$$ORIGIN:$(LIBDIR)' -lm -lpthread -ldl
 
 $(BUILD_DIR)/$(MODE)/static/%.o: $(SRC_DIR)/%.c
 	@mkdir -p $(dir $@)

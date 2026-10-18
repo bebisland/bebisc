@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-Token advance(Parser *parser) { return parser->tokens[parser->current++]; }
+static Token advance(Parser *parser) {
+  return parser->tokens[parser->current++];
+}
 static Token peek(Parser *parser) { return parser->tokens[parser->current]; }
 static int is_at_end(Parser *parser) { return peek(parser).type == TOKEN_EOF; }
 static int check(Parser *parser, TokenType type) {
@@ -45,8 +47,10 @@ static const char *id_string(ASTNode *value) {
   return NULL;
 }
 
-static ASTNode *parse_value(Parser *parser);
-static ASTNode *parse_field_statement(Parser *parser);
+static int is_type_keyword(TokenType type) {
+  return type == TOKEN_BONIBON || type == TOKEN_FALIM ||
+         type == TOKEN_PAMUKSEKER || type == TOKEN_CIKLET;
+}
 
 static int parse_named_args(Parser *parser, ASTNode **head, ASTNode **tail) {
   if (!match(parser, TOKEN_LBRACE))
@@ -106,7 +110,10 @@ static ASTNode *parse_value(Parser *parser) {
     advance(parser);
     ASTNode *node = ast_node_new(NODE_BOOL_LITERAL);
     node->line = token.line;
-    node->decl.bool_value = (strcmp(token.lex, "true") == 0) ? 1 : 0;
+    // pipi/true are the truthy spellings, popo/false the falsy ones
+    node->decl.bool_value =
+        (strcmp(token.lex, "pipi") == 0 || strcmp(token.lex, "true") == 0) ? 1
+                                                                           : 0;
     return node;
   }
   case TOKEN_DOLLAR: {
@@ -168,19 +175,25 @@ static ASTNode *parse_enum(Parser *parser) {
   advance(parser);
 
   Token name = advance(parser);
+  if (name.type != TOKEN_IDENTIFIER)
+    return NULL;
 
   if (!match(parser, TOKEN_LBRACE))
     return NULL;
 
   ASTNode *node = ast_node_new(NODE_ENUM_DECL);
+  node->line = name.line;
   node->decl.enum_decl.name = strdup(name.lex);
   node->decl.enum_decl.members = NULL;
 
   ASTNode *tail = NULL;
   while (!is_at_end(parser) && !check(parser, TOKEN_RBRACE)) {
     Token member_name = advance(parser);
+    if (member_name.type != TOKEN_IDENTIFIER)
+      goto fail;
 
     ASTNode *member = ast_node_new(NODE_ENUM_MEMBER);
+    member->line = member_name.line;
     member->decl.enum_member.name = strdup(member_name.lex);
     append(&node->decl.enum_decl.members, &tail, member);
 
@@ -202,22 +215,30 @@ static ASTNode *parse_struct(Parser *parser) {
   advance(parser);
 
   Token name = advance(parser);
+  if (name.type != TOKEN_IDENTIFIER)
+    return NULL;
 
   if (!match(parser, TOKEN_LBRACE))
     return NULL;
 
   ASTNode *node = ast_node_new(NODE_STRUCT_DECL);
+  node->line = name.line;
   node->decl.struct_decl.name = strdup(name.lex);
   node->decl.struct_decl.fields = NULL;
 
   ASTNode *tail = NULL;
   while (!is_at_end(parser) && !check(parser, TOKEN_RBRACE)) {
     Token field_name = advance(parser);
+    if (field_name.type != TOKEN_IDENTIFIER)
+      goto fail;
     if (!match(parser, TOKEN_COLON))
       goto fail;
     Token type_name = advance(parser);
+    if (type_name.type != TOKEN_IDENTIFIER && !is_type_keyword(type_name.type))
+      goto fail;
 
     ASTNode *field = ast_node_new(NODE_STRUCT_FIELD);
+    field->line = field_name.line;
     field->decl.struct_field.name = strdup(field_name.lex);
     field->decl.struct_field.type_name = strdup(type_name.lex);
     append(&node->decl.struct_decl.fields, &tail, field);
@@ -242,6 +263,8 @@ static ASTNode *parse_handler(Parser *parser) {
     return NULL;
 
   Token type_name = advance(parser);
+  if (type_name.type != TOKEN_IDENTIFIER)
+    return NULL;
 
   ASTNode *node = ast_node_new(NODE_EVENT_HANDLER);
   node->line = keyword.line;
@@ -299,6 +322,8 @@ static ASTNode *parse_emit(Parser *parser) {
     return NULL;
 
   Token type_name = advance(parser);
+  if (type_name.type != TOKEN_IDENTIFIER)
+    return NULL;
 
   ASTNode *node = ast_node_new(NODE_EMIT);
   node->line = keyword.line;
@@ -495,11 +520,30 @@ ASTNode *parse_program(Parser *parser) {
   ASTNode *tail = NULL;
 
   while (!is_at_end(parser)) {
+    int start = parser->current;
     ASTNode *node = parse_declaration(parser);
     if (node == NULL) {
-      Token token = peek(parser);
-      fprintf(stderr, "error: line %d: unexpected '%s'\n", token.line,
-              token.lex);
+      int already_reported = 0;
+      int at = start;
+      for (int i = start; i <= parser->current; i++) {
+        if (parser->tokens[i].type == TOKEN_EOF) {
+          at = start;
+          break;
+        }
+        if (parser->tokens[i].type == TOKEN_UNKNOWN) {
+          already_reported = 1;
+          break;
+        }
+        at = i;
+        if (i == parser->current)
+          break;
+      }
+
+      if (!already_reported) {
+        Token token = parser->tokens[at];
+        fprintf(stderr, "error: line %d: unexpected '%s'\n", token.line,
+                token.lex);
+      }
       parser->had_error = 1;
       break;
     }

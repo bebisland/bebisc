@@ -3,7 +3,7 @@
 #include <stdlib.h>
 
 ASTNode *ast_node_new(NodeType type) {
-  ASTNode *node = (ASTNode *)malloc(sizeof(ASTNode));
+  ASTNode *node = (ASTNode *)calloc(1, sizeof(ASTNode));
   node->type = type;
   node->line = 0;
   node->next = NULL;
@@ -81,15 +81,6 @@ void print_ast(ASTNode *node, int indent) {
       printf("\n");
       print_ast(node->decl.event_handler.body, indent + 2);
       break;
-    case NODE_HANDLER_PARAM:
-      printf("bind: %s", node->decl.handler_param.name);
-      if (node->decl.handler_param.value != NULL) {
-        printf(" = ");
-        print_value(node->decl.handler_param.value);
-      } else {
-        printf("\n");
-      }
-      break;
     case NODE_PRINT_STMT:
       printf("print: ");
       print_value(node->decl.print_stmt.value);
@@ -155,10 +146,6 @@ void free_ast(ASTNode *node) {
       free(node->decl.event_handler.type_name);
       free(node->decl.event_handler.id);
       free_ast(node->decl.event_handler.body);
-      break;
-    case NODE_HANDLER_PARAM:
-      free(node->decl.handler_param.name);
-      free_ast(node->decl.handler_param.value);
       break;
     case NODE_PRINT_STMT:
       free_ast(node->decl.print_stmt.value);

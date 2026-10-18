@@ -29,8 +29,15 @@ typedef struct Value {
 
 typedef struct Tuple {
   Value *items;
+  const char **types;
   int count;
 } Tuple;
+
+typedef struct {
+  char *data;
+  size_t len;
+  size_t cap;
+} TextBuffer;
 
 typedef struct Binding {
   const char *name;
@@ -48,6 +55,11 @@ typedef struct Struct {
   struct Struct *next;
 } Struct;
 
+typedef struct EnumDecl {
+  ASTNode *node;
+  struct EnumDecl *next;
+} EnumDecl;
+
 typedef struct {
   Binding *fields;
   Binding *vars;
@@ -56,6 +68,7 @@ typedef struct {
 typedef struct {
   Handler *handlers;
   Struct *structs;
+  EnumDecl *enums;
   Binding *globals;
 } Runtime;
 
@@ -132,8 +145,11 @@ static Value value_clone(Value value) {
     Tuple *copy = malloc(sizeof(Tuple));
     copy->count = value.tuple->count;
     copy->items = malloc(sizeof(Value) * (size_t)copy->count);
-    for (int i = 0; i < copy->count; i++)
+    copy->types = malloc(sizeof(char *) * (size_t)copy->count);
+    for (int i = 0; i < copy->count; i++) {
       copy->items[i] = value_clone(value.tuple->items[i]);
+      copy->types[i] = value.tuple->types[i];
+    }
     value.tuple = copy;
   }
 
@@ -147,37 +163,67 @@ static void value_free(Value value) {
     for (int i = 0; i < value.tuple->count; i++)
       value_free(value.tuple->items[i]);
     free(value.tuple->items);
+    free(value.tuple->types);
     free(value.tuple);
   }
 }
 
-static void value_print(Value value) {
+static int buffer_put(TextBuffer *buffer, const char *text, size_t length) {
+  if (buffer->len + length + 1 > buffer->cap) {
+    size_t cap = buffer->cap == 0 ? 64 : buffer->cap;
+    while (cap < buffer->len + length + 1)
+      cap *= 2;
+
+    char *data = realloc(buffer->data, cap);
+    if (data == NULL)
+      return 0;
+
+    buffer->data = data;
+    buffer->cap = cap;
+  }
+
+  memcpy(buffer->data + buffer->len, text, length);
+  buffer->len += length;
+  buffer->data[buffer->len] = '\0';
+  return 1;
+}
+
+static int buffer_puts(TextBuffer *buffer, const char *text) {
+  return buffer_put(buffer, text, strlen(text));
+}
+
+static int value_append(TextBuffer *buffer, Value value) {
+  char scratch[64];
+
   switch (value.type) {
   case VALUE_NUMBER:
-    printf("%d", value.number);
-    break;
+    snprintf(scratch, sizeof(scratch), "%d", value.number);
+    return buffer_puts(buffer, scratch);
   case VALUE_FLOAT:
-    printf("%g", (double)value.float_value);
-    break;
+    snprintf(scratch, sizeof(scratch), "%g", (double)value.float_value);
+    return buffer_puts(buffer, scratch);
   case VALUE_BOOL:
-    printf("%s", value.bool_value ? "true" : "false");
-    break;
+    return buffer_puts(buffer, value.bool_value ? "true" : "false");
   case VALUE_STRING:
-    printf("%s", value.string);
-    break;
+    return buffer_puts(buffer, value.string);
   case VALUE_MEMBER:
-    printf("%s.%s", value.string, value.member);
-    break;
+    if (!buffer_puts(buffer, value.string))
+      return 0;
+    if (value.member == NULL || value.member[0] == '\0')
+      return 1;
+    return buffer_puts(buffer, ".") && buffer_puts(buffer, value.member);
   case VALUE_TUPLE:
-    putchar('(');
+    if (!buffer_puts(buffer, "("))
+      return 0;
     for (int i = 0; i < value.tuple->count; i++) {
-      if (i > 0)
-        printf(", ");
-      value_print(value.tuple->items[i]);
+      if (i > 0 && !buffer_puts(buffer, ", "))
+        return 0;
+      if (!value_append(buffer, value.tuple->items[i]))
+        return 0;
     }
-    putchar(')');
-    break;
+    return buffer_puts(buffer, ")");
   }
+  return 1;
 }
 
 static Binding *bind_add(Binding *list, const char *name, Value value) {
@@ -247,6 +293,25 @@ static ASTNode *find_struct_by_name(Struct *structs, const char *name) {
   return NULL;
 }
 
+static ASTNode *find_enum_by_name(EnumDecl *enums, const char *name) {
+  for (EnumDecl *e = enums; e != NULL; e = e->next) {
+    if (strcmp(e->node->decl.enum_decl.name, name) == 0)
+      return e->node;
+  }
+  return NULL;
+}
+
+static int is_primitive_type(const char *type_name) {
+  return strcmp(type_name, "bonibon") == 0 ||
+         strcmp(type_name, "pamukseker") == 0 ||
+         strcmp(type_name, "falim") == 0 || strcmp(type_name, "ciklet") == 0;
+}
+
+static int type_is_known(const char *type_name, EnumDecl *enums) {
+  return is_primitive_type(type_name) ||
+         (enums != NULL && find_enum_by_name(enums, type_name) != NULL);
+}
+
 static int type_accepts(const char *type_name, Value value) {
   if (strcmp(type_name, "bonibon") == 0)
     return value.type == VALUE_NUMBER;
@@ -277,7 +342,7 @@ static const char *value_type_name(Value value) {
   return "?";
 }
 
-static int make_default(const char *type_name, Value *out) {
+static int make_default(const char *type_name, EnumDecl *enums, Value *out) {
   if (strcmp(type_name, "bonibon") == 0) {
     *out = (Value){.type = VALUE_NUMBER};
     return 1;
@@ -295,8 +360,22 @@ static int make_default(const char *type_name, Value *out) {
     return 1;
   }
 
+  if (!type_is_known(type_name, enums))
+    return 0;
+
   *out = (Value){.type = VALUE_MEMBER, .string = type_name, .member = ""};
   return 1;
+}
+
+static Value make_default_or_report(const char *type_name, EnumDecl *enums,
+                                    int line, int *errors) {
+  Value value;
+  if (!make_default(type_name, enums, &value)) {
+    fprintf(stderr, "error: line %d: unknown type '%s'\n", line, type_name);
+    (*errors)++;
+    return value_nil();
+  }
+  return value;
 }
 
 static int eval_value(ASTNode *node, Scope *scope, Runtime *runtime,
@@ -344,13 +423,19 @@ static int eval_value(ASTNode *node, Scope *scope, Runtime *runtime,
   case NODE_IDENTIFIER: {
     const char *name = node->decl.identifier.name;
     Binding *field = bindings_find(scope->fields, name, strlen(name));
-    if (field == NULL) {
-      fprintf(stderr, "error: line %d: unknown identifier '%s'\n", node->line,
-              name);
-      return 1;
+    if (field != NULL) {
+      *out = value_clone(field->value);
+      return 0;
     }
-    *out = value_clone(field->value);
-    return 0;
+
+    if (find_enum_by_name(runtime->enums, name) != NULL) {
+      *out = (Value){.type = VALUE_MEMBER, .string = name, .member = ""};
+      return 0;
+    }
+
+    fprintf(stderr, "error: line %d: unknown identifier '%s'\n", node->line,
+            name);
+    return 1;
   }
   default:
     *out = value_from_node(node);
@@ -493,11 +578,21 @@ static int check_statement(ASTNode *stmt, Struct *structs) {
   return 0;
 }
 
-static int check_program(ASTNode *program, Struct *structs) {
+static int check_program(ASTNode *program, Struct *structs, EnumDecl *enums) {
   int errors = 0;
 
   for (ASTNode *node = program; node != NULL; node = node->next) {
-    if (node->type == NODE_EMIT || node->type == NODE_PRINT_STMT) {
+    if (node->type == NODE_STRUCT_DECL) {
+      for (ASTNode *field = node->decl.struct_decl.fields; field != NULL;
+           field = field->next) {
+        const char *type_name = field->decl.struct_field.type_name;
+        if (!type_is_known(type_name, enums)) {
+          fprintf(stderr, "error: line %d: unknown type '%s' for field '%s'\n",
+                  field->line, type_name, field->decl.struct_field.name);
+          errors++;
+        }
+      }
+    } else if (node->type == NODE_EMIT || node->type == NODE_PRINT_STMT) {
       errors += check_statement(node, structs);
     } else if (node->type == NODE_EVENT_HANDLER) {
       const char *type_name = node->decl.event_handler.type_name;
@@ -618,64 +713,64 @@ static int template_ref(const char *text, size_t len, Scope *scope,
 
 static int print_template(const char *text, Scope *scope, Runtime *runtime,
                           int line) {
+  TextBuffer buffer = {0};
+
   for (int i = 0; text[i] != '\0'; i++) {
-    if (text[i] != '{')
+    if (text[i] != '{') {
+      if (!buffer_put(&buffer, &text[i], 1))
+        goto oom;
       continue;
+    }
 
     int end = i + 1;
     while (text[end] != '\0' && text[end] != '}')
       end++;
 
-    if (text[end] != '}')
+    if (text[end] != '}') {
+      if (!buffer_put(&buffer, &text[i], 1))
+        goto oom;
       continue;
+    }
 
     size_t len = (size_t)(end - i - 1);
 
     if (text[i + 1] == '$') {
       Value value;
-      if (template_ref(&text[i + 1], len, scope, runtime, line, &value))
+      if (template_ref(&text[i + 1], len, scope, runtime, line, &value)) {
+        free(buffer.data);
         return 1;
+      }
+      if (!value_append(&buffer, value)) {
+        value_free(value);
+        goto oom;
+      }
       value_free(value);
-    } else if (bindings_find(scope->fields, &text[i + 1], len) == NULL) {
-      fprintf(stderr, "error: line %d: no value for '{%.*s}'\n", line, (int)len,
-              &text[i + 1]);
-      return 1;
+    } else {
+      Binding *field = bindings_find(scope->fields, &text[i + 1], len);
+      if (field == NULL) {
+        fprintf(stderr, "error: line %d: no value for '{%.*s}'\n", line,
+                (int)len, &text[i + 1]);
+        free(buffer.data);
+        return 1;
+      }
+      if (!value_append(&buffer, field->value)) {
+        free(buffer.data);
+        goto oom;
+      }
     }
     i = end;
   }
 
-  for (int i = 0; text[i] != '\0'; i++) {
-    if (text[i] != '{') {
-      putchar(text[i]);
-      continue;
-    }
-
-    int end = i + 1;
-    while (text[end] != '\0' && text[end] != '}')
-      end++;
-
-    if (text[end] == '}') {
-      size_t len = (size_t)(end - i - 1);
-
-      if (text[i + 1] == '$') {
-        Value value;
-        if (template_ref(&text[i + 1], len, scope, runtime, line, &value) ==
-            0) {
-          value_print(value);
-          value_free(value);
-        }
-      } else {
-        Binding *field = bindings_find(scope->fields, &text[i + 1], len);
-        if (field != NULL)
-          value_print(field->value);
-      }
-      i = end;
-    } else {
-      putchar(text[i]);
-    }
-  }
+  if (buffer.data != NULL)
+    fwrite(buffer.data, 1, buffer.len, stdout);
   putchar('\n');
+  free(buffer.data);
   return 0;
+
+oom:
+  fprintf(stderr, "error: line %d: out of memory\n", line);
+  free(buffer.data);
+  return 1;
 }
 
 static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args,
@@ -694,16 +789,16 @@ static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args,
     if (arg != NULL) {
       if (eval_value(arg->decl.emit_arg.value, scope, runtime, &value)) {
         (*errors)++;
-        make_default(type, &value);
+        value = make_default_or_report(type, runtime->enums, line, errors);
       } else if (!type_accepts(type, value)) {
         fprintf(stderr, "error: line %d: field '%s' expects %s, got %s\n", line,
                 name, type, value_type_name(value));
         value_free(value);
         (*errors)++;
-        make_default(type, &value);
+        value = make_default_or_report(type, runtime->enums, line, errors);
       }
     } else {
-      make_default(type, &value);
+      value = make_default_or_report(type, runtime->enums, line, errors);
     }
 
     bindings = bind_add(bindings, name, value);
@@ -782,6 +877,7 @@ static int exec_statement(ASTNode *stmt, Scope *scope, Runtime *runtime,
     Tuple *tuple = malloc(sizeof(Tuple));
     tuple->count = count;
     tuple->items = malloc(sizeof(Value) * (size_t)count);
+    tuple->types = malloc(sizeof(char *) * (size_t)count);
 
     int errors = 0;
     int i = 0;
@@ -791,6 +887,7 @@ static int exec_statement(ASTNode *stmt, Scope *scope, Runtime *runtime,
         tuple->items[i] = value_nil();
         errors++;
       }
+      tuple->types[i] = value_type_name(tuple->items[i]);
     }
 
     if (errors > 0) {
@@ -829,6 +926,16 @@ static int exec_statement(ASTNode *stmt, Scope *scope, Runtime *runtime,
     Value value;
     if (eval_value(stmt->decl.index_set.value, scope, runtime, &value))
       return 1;
+
+    const char *expected =
+        var->value.tuple->types != NULL ? var->value.tuple->types[index] : NULL;
+    if (expected != NULL && strcmp(expected, value_type_name(value)) != 0) {
+      fprintf(stderr,
+              "error: line %d: element %d of '$%s' expects %s, got %s\n",
+              stmt->line, index, name, expected, value_type_name(value));
+      value_free(value);
+      return 1;
+    }
 
     value_free(var->value.tuple->items[index]);
     var->value.tuple->items[index] = value;
@@ -873,12 +980,23 @@ static void free_handlers(Handler *list) {
   }
 }
 
+static void free_enums(EnumDecl *list) {
+  while (list != NULL) {
+    EnumDecl *next = list->next;
+    free(list);
+    list = next;
+  }
+}
+
 int run_program(ASTNode *program) {
   Struct *structs = NULL;
   Struct *structs_tail = NULL;
 
   Handler *handlers = NULL;
   Handler *handlers_tail = NULL;
+
+  EnumDecl *enums = NULL;
+  EnumDecl *enums_tail = NULL;
 
   for (ASTNode *node = program; node != NULL; node = node->next) {
     if (node->type == NODE_STRUCT_DECL) {
@@ -891,6 +1009,16 @@ int run_program(ASTNode *program) {
       else
         structs_tail->next = s;
       structs_tail = s;
+    } else if (node->type == NODE_ENUM_DECL) {
+      EnumDecl *e = malloc(sizeof(EnumDecl));
+      e->node = node;
+      e->next = NULL;
+
+      if (enums == NULL)
+        enums = e;
+      else
+        enums_tail->next = e;
+      enums_tail = e;
     } else if (node->type == NODE_EVENT_HANDLER) {
       Handler *handler = malloc(sizeof(Handler));
       handler->node = node;
@@ -904,13 +1032,17 @@ int run_program(ASTNode *program) {
     }
   }
 
-  Runtime runtime = {.handlers = handlers, .structs = structs, .globals = NULL};
+  Runtime runtime = {.handlers = handlers,
+                     .structs = structs,
+                     .enums = enums,
+                     .globals = NULL};
   Scope top_scope = {.fields = NULL, .vars = NULL};
 
-  int errors = check_program(program, structs);
+  int errors = check_program(program, structs, enums);
   if (errors > 0) {
     free_structs(structs);
     free_handlers(handlers);
+    free_enums(enums);
     return errors;
   }
 
@@ -933,6 +1065,7 @@ int run_program(ASTNode *program) {
   vars_free(runtime.globals);
   free_structs(structs);
   free_handlers(handlers);
+  free_enums(enums);
 
   return run_errors;
 }

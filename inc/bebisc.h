@@ -56,11 +56,10 @@ typedef enum {
   NODE_STRUCT_FIELD, // field: type
 
   NODE_EVENT_HANDLER, // kokla
-  NODE_HANDLER_PARAM, // bound field / id
 
   NODE_PRINT_STMT, // cikle
 
-  NODE_EMIT,     // cikle
+  NODE_EMIT,     // pirt
   NODE_EMIT_ARG, // name = value
 
   NODE_IDENTIFIER,
@@ -108,11 +107,6 @@ typedef struct ASTNode {
       char *id;
       struct ASTNode *body;
     } event_handler;
-
-    struct {
-      char *name;
-      struct ASTNode *value;
-    } handler_param;
 
     struct {
       struct ASTNode *value;
@@ -182,7 +176,6 @@ typedef struct {
   int had_error;
 } Parser;
 
-Token advance(Parser *parser);
 ASTNode *parse_program(Parser *parser);
 
 // interp.c

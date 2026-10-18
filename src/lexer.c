@@ -1,6 +1,7 @@
 #include "bebisc.h"
 #include <ctype.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -25,7 +26,9 @@ static TokenType check_keyword(const char *text) {
     return TOKEN_CIKLET;
   if (strcmp(text, "ye") == 0)
     return TOKEN_YE;
-  if (strcmp(text, "pipi") == 0 || strcmp(text, "popo") == 0)
+  if (strcmp(text, "pipi") == 0 || strcmp(text, "true") == 0)
+    return TOKEN_BOOL;
+  if (strcmp(text, "popo") == 0 || strcmp(text, "false") == 0)
     return TOKEN_BOOL;
   return TOKEN_IDENTIFIER;
 }
@@ -150,22 +153,29 @@ Token *tokenize(const char *source, int *out_count) {
         cursor++;
       }
 
-      add_token(&list, TOKEN_STRING, slice(source, start, cursor), line);
+      if (cursor >= len) {
+        fprintf(stderr, "error: line %d: unterminated string literal\n", line);
+        add_token(&list, TOKEN_UNKNOWN, slice(source, start, cursor), line);
+        break;
+      }
 
-      if (cursor < len)
-        cursor++; // closing quote
+      add_token(&list, TOKEN_STRING, slice(source, start, cursor), line);
+      cursor++; // closing quote
       continue;
     }
 
     if (isdigit((unsigned char)c)) {
       int start = cursor;
       int is_float = 0;
-      while (cursor < len && (isdigit((unsigned char)source[cursor]) ||
-                              source[cursor] == '.')) {
-        if (source[cursor] == '.') {
-          is_float = 1;
-        }
+      while (cursor < len && isdigit((unsigned char)source[cursor]))
         cursor++;
+
+      if (cursor + 1 < len && source[cursor] == '.' &&
+          isdigit((unsigned char)source[cursor + 1])) {
+        is_float = 1;
+        cursor++;
+        while (cursor < len && isdigit((unsigned char)source[cursor]))
+          cursor++;
       }
 
       add_token(&list, is_float ? TOKEN_FLOAT : TOKEN_NUMBER,
@@ -187,6 +197,8 @@ Token *tokenize(const char *source, int *out_count) {
       continue;
     }
 
+    fprintf(stderr, "error: line %d: unexpected character '%c'\n", line, c);
+    add_token(&list, TOKEN_UNKNOWN, slice(source, cursor, cursor + 1), line);
     cursor++;
   }
 
