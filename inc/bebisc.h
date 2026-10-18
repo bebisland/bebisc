@@ -40,6 +40,7 @@ typedef struct {
 } Token;
 
 Token *tokenize(const char *source, int *out_count);
+void tokens_free(Token *tokens, int count);
 
 // ast.c
 typedef enum {
@@ -135,6 +136,7 @@ typedef struct ASTNode {
 
 ASTNode *ast_node_new(NodeType type);
 void print_ast(ASTNode *node, int indent);
+void free_ast(ASTNode *node);
 
 // parser.c
 typedef struct {

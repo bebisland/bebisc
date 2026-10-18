@@ -88,39 +88,38 @@ Token *tokenize(const char *source, int *out_count) {
 
     switch (c) {
     case ':':
-      add_token(&list, TOKEN_COLON, ":", line);
+      add_token(&list, TOKEN_COLON, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case '=':
-      add_token(&list, TOKEN_ASSIGN, "=", line);
+      add_token(&list, TOKEN_ASSIGN, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case ',':
-      add_token(&list, TOKEN_COMMA, ",", line);
+      add_token(&list, TOKEN_COMMA, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case '.':
-      add_token(&list, TOKEN_DOT, ".", line);
+      add_token(&list, TOKEN_DOT, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case '(':
-      add_token(&list, TOKEN_LPAREN, "(", line);
+      add_token(&list, TOKEN_LPAREN, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case ')':
-      add_token(&list, TOKEN_RPAREN, ")", line);
+      add_token(&list, TOKEN_RPAREN, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case '{':
-      add_token(&list, TOKEN_LBRACE, "{", line);
+      add_token(&list, TOKEN_LBRACE, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case '}':
-      add_token(&list, TOKEN_RBRACE, "}", line);
+      add_token(&list, TOKEN_RBRACE, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case ';':
-      line++;
       cursor++;
       continue;
     }
@@ -171,8 +170,18 @@ Token *tokenize(const char *source, int *out_count) {
     cursor++;
   }
 
-  add_token(&list, TOKEN_EOF, "", line);
+  add_token(&list, TOKEN_EOF, slice(source, len, len), line);
 
   *out_count = list.count;
   return list.tokens;
+}
+
+void tokens_free(Token *tokens, int count) {
+  if (tokens == NULL)
+    return;
+
+  for (int i = 0; i < count; i++)
+    free((void *)tokens[i].lex); // every lexeme is heap-owned
+
+  free(tokens);
 }

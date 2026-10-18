@@ -48,7 +48,11 @@ int main(int argc, char **argv) {
   Parser parser = {tokens, 0, 0};
   ASTNode *root = parse_program(&parser);
 
+  // the AST keeps its own copies of every lexeme
+  tokens_free(tokens, token_count);
+
   if (parser.had_error) {
+    free_ast(root);
     free(source);
     return 1;
   }
@@ -59,6 +63,7 @@ int main(int argc, char **argv) {
 
   int status = run_program(root);
 
+  free_ast(root);
   free(source);
   return status > 0 ? 1 : 0;
 }

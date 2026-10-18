@@ -100,3 +100,62 @@ void print_ast(ASTNode *node, int indent) {
     node = node->next;
   }
 }
+
+void free_ast(ASTNode *node) {
+  while (node != NULL) {
+    ASTNode *next = node->next;
+
+    switch (node->type) {
+    case NODE_ENUM_DECL:
+      free(node->decl.enum_decl.name);
+      free_ast(node->decl.enum_decl.members);
+      break;
+    case NODE_ENUM_MEMBER:
+      free(node->decl.enum_member.name);
+      break;
+    case NODE_STRUCT_DECL:
+      free(node->decl.struct_decl.name);
+      free_ast(node->decl.struct_decl.fields);
+      break;
+    case NODE_STRUCT_FIELD:
+      free(node->decl.struct_field.name);
+      free(node->decl.struct_field.type_name);
+      break;
+    case NODE_EVENT_HANDLER:
+      free(node->decl.event_handler.type_name);
+      free(node->decl.event_handler.id);
+      free_ast(node->decl.event_handler.body);
+      break;
+    case NODE_HANDLER_PARAM:
+      free(node->decl.handler_param.name);
+      free_ast(node->decl.handler_param.value);
+      break;
+    case NODE_PRINT_STMT:
+      free_ast(node->decl.print_stmt.value);
+      break;
+    case NODE_EMIT:
+      free(node->decl.emit.type_name);
+      free_ast(node->decl.emit.args);
+      break;
+    case NODE_EMIT_ARG:
+      free(node->decl.emit_arg.name);
+      free_ast(node->decl.emit_arg.value);
+      break;
+    case NODE_IDENTIFIER:
+      free(node->decl.identifier.name);
+      break;
+    case NODE_MEMBER_ACCESS:
+      free_ast(node->decl.member_access.object);
+      free(node->decl.member_access.member);
+      break;
+    case NODE_STRING_LITERAL:
+      free(node->decl.string_value);
+      break;
+    default:
+      break;
+    }
+
+    free(node);
+    node = next;
+  }
+}

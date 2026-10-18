@@ -114,9 +114,13 @@ static ASTNode *parse_enum(Parser *parser) {
   }
 
   if (!match(parser, TOKEN_RBRACE))
-    return NULL;
+    goto fail;
 
   return node;
+
+fail:
+  free_ast(node);
+  return NULL;
 }
 
 static ASTNode *parse_struct(Parser *parser) {
@@ -135,7 +139,7 @@ static ASTNode *parse_struct(Parser *parser) {
   while (!is_at_end(parser) && !check(parser, TOKEN_RBRACE)) {
     Token field_name = advance(parser);
     if (!match(parser, TOKEN_COLON))
-      return NULL;
+      goto fail;
     Token type_name = advance(parser);
 
     ASTNode *field = ast_node_new(NODE_STRUCT_FIELD);
@@ -147,9 +151,13 @@ static ASTNode *parse_struct(Parser *parser) {
   }
 
   if (!match(parser, TOKEN_RBRACE))
-    return NULL;
+    goto fail;
 
   return node;
+
+fail:
+  free_ast(node);
+  return NULL;
 }
 
 static ASTNode *parse_handler(Parser *parser) {
@@ -170,19 +178,24 @@ static ASTNode *parse_handler(Parser *parser) {
   if (match(parser, TOKEN_COMMA)) {
     Token name = advance(parser);
     if (strcmp(name.lex, "id") != 0)
-      return NULL;
+      goto fail;
     if (!match(parser, TOKEN_ASSIGN))
-      return NULL;
-    const char *id = id_string(parse_value(parser));
-    if (id == NULL)
-      return NULL;
+      goto fail;
+
+    ASTNode *id_value = parse_value(parser);
+    const char *id = id_string(id_value);
+    if (id == NULL) {
+      free_ast(id_value);
+      goto fail;
+    }
     node->decl.event_handler.id = strdup(id);
+    free_ast(id_value);
   }
 
   if (!match(parser, TOKEN_RPAREN))
-    return NULL;
+    goto fail;
   if (!match(parser, TOKEN_LBRACE))
-    return NULL;
+    goto fail;
 
   ASTNode *body_head = NULL;
   ASTNode *body_tail = NULL;
@@ -195,9 +208,13 @@ static ASTNode *parse_handler(Parser *parser) {
   node->decl.event_handler.body = body_head;
 
   if (!match(parser, TOKEN_RBRACE))
-    return NULL;
+    goto fail;
 
   return node;
+
+fail:
+  free_ast(node);
+  return NULL;
 }
 
 static ASTNode *parse_emit(Parser *parser) {
@@ -221,11 +238,11 @@ static ASTNode *parse_emit(Parser *parser) {
       while (!check(parser, TOKEN_RBRACE) && !is_at_end(parser)) {
         Token name = advance(parser);
         if (!match(parser, TOKEN_ASSIGN))
-          return NULL;
+          goto fail;
 
         ASTNode *value = parse_value(parser);
         if (value == NULL)
-          return NULL;
+          goto fail;
 
         ASTNode *arg = ast_node_new(NODE_EMIT_ARG);
         arg->decl.emit_arg.name = strdup(name.lex);
@@ -236,30 +253,34 @@ static ASTNode *parse_emit(Parser *parser) {
           break;
       }
       if (!match(parser, TOKEN_RBRACE))
-        return NULL;
+        goto fail;
     } else if (check(parser, TOKEN_IDENTIFIER)) {
       // named arg
       Token name = advance(parser);
       if (!match(parser, TOKEN_ASSIGN))
-        return NULL;
+        goto fail;
 
       ASTNode *value = parse_value(parser);
       if (value == NULL)
-        return NULL;
+        goto fail;
 
       ASTNode *arg = ast_node_new(NODE_EMIT_ARG);
       arg->decl.emit_arg.name = strdup(name.lex);
       arg->decl.emit_arg.value = value;
       append(&node->decl.emit.args, &tail, arg);
     } else {
-      return NULL;
+      goto fail;
     }
   }
 
   if (!match(parser, TOKEN_RPAREN))
-    return NULL;
+    goto fail;
 
   return node;
+
+fail:
+  free_ast(node);
+  return NULL;
 }
 
 static ASTNode *parse_print(Parser *parser) {
@@ -272,8 +293,10 @@ static ASTNode *parse_print(Parser *parser) {
   if (value == NULL)
     return NULL;
 
-  if (!match(parser, TOKEN_RPAREN))
+  if (!match(parser, TOKEN_RPAREN)) {
+    free_ast(value);
     return NULL;
+  }
 
   ASTNode *node = ast_node_new(NODE_PRINT_STMT);
   node->line = keyword.line;

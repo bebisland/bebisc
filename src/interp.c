@@ -39,9 +39,13 @@ typedef struct Struct {
   struct Struct *next;
 } Struct;
 
-static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs);
+static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs,
+                      int depth);
 static int exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers,
-                     Struct *structs);
+                     Struct *structs, int depth);
+
+// guards against handlers that keep emitting their own event
+#define MAX_EVENT_DEPTH 256
 
 static Value value_from_node(ASTNode *node) {
   Value value = {VALUE_STRING, 0, 0.0f, 0, "", NULL};
@@ -268,28 +272,47 @@ static int check_handler_body(ASTNode *handler, ASTNode *schema) {
   return errors;
 }
 
+static int check_emit_node(ASTNode *node, Struct *structs) {
+  const char *type_name = node->decl.emit.type_name;
+  ASTNode *schema = find_struct_by_name(structs, type_name);
+
+  if (schema == NULL) {
+    fprintf(stderr, "error: line %d: unknown event type '%s'\n", node->line,
+            type_name);
+    return 1;
+  }
+
+  int errors = 0;
+  for (ASTNode *arg = node->decl.emit.args; arg != NULL; arg = arg->next) {
+    const char *name = arg->decl.emit_arg.name;
+    if (strcmp(name, "id") == 0)
+      continue;
+    errors += check_field(schema, name, arg->decl.emit_arg.value, node->line);
+  }
+  return errors;
+}
+
+static int check_statement(ASTNode *stmt, Struct *structs) {
+  if (stmt->type == NODE_EMIT)
+    return check_emit_node(stmt, structs);
+
+  if (stmt->type == NODE_PRINT_STMT) {
+    ASTNode *value = stmt->decl.print_stmt.value;
+    if (value == NULL || value->type != NODE_STRING_LITERAL) {
+      fprintf(stderr, "error: line %d: cikle expects a string literal\n",
+              stmt->line);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static int check_program(ASTNode *program, Struct *structs) {
   int errors = 0;
 
   for (ASTNode *node = program; node != NULL; node = node->next) {
     if (node->type == NODE_EMIT) {
-      const char *type_name = node->decl.emit.type_name;
-      ASTNode *schema = find_struct_by_name(structs, type_name);
-
-      if (schema == NULL) {
-        fprintf(stderr, "error: line %d: unknown event type '%s'\n", node->line,
-                type_name);
-        errors++;
-        continue;
-      }
-
-      for (ASTNode *arg = node->decl.emit.args; arg != NULL; arg = arg->next) {
-        const char *name = arg->decl.emit_arg.name;
-        if (strcmp(name, "id") == 0)
-          continue;
-        errors +=
-            check_field(schema, name, arg->decl.emit_arg.value, node->line);
-      }
+      errors += check_emit_node(node, structs);
     } else if (node->type == NODE_EVENT_HANDLER) {
       const char *type_name = node->decl.event_handler.type_name;
       ASTNode *schema = find_struct_by_name(structs, type_name);
@@ -302,6 +325,10 @@ static int check_program(ASTNode *program, Struct *structs) {
       }
 
       errors += check_handler_body(node, schema);
+
+      for (ASTNode *stmt = node->decl.event_handler.body; stmt != NULL;
+           stmt = stmt->next)
+        errors += check_statement(stmt, structs);
     }
   }
 
@@ -396,14 +423,26 @@ static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args) {
   return bindings;
 }
 
-static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs) {
+static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs,
+                      int depth) {
   const char *type_name = emit->decl.emit.type_name;
   ASTNode *args = emit->decl.emit.args;
   const char *id = event_id(args);
 
+  if (depth > MAX_EVENT_DEPTH) {
+    fprintf(stderr,
+            "error: line %d: event depth limit reached (recursive pirt?)\n",
+            emit->line);
+    return 1;
+  }
+
   ASTNode *schema = find_struct_by_name(structs, type_name);
-  if (schema == NULL)
-    return 0;
+  if (schema == NULL) {
+    // unreachable: check_program rejects unknown event types first
+    fprintf(stderr, "error: line %d: unknown event type '%s'\n", emit->line,
+            type_name);
+    return 1;
+  }
 
   int errors = 0;
   for (Handler *h = handlers; h != NULL; h = h->next) {
@@ -416,7 +455,7 @@ static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs) {
 
     Binding *bindings = bind_handler_fields(schema, args);
     errors += exec_body(handler->decl.event_handler.body, bindings, handlers,
-                        structs);
+                        structs, depth);
     bindings_free(bindings);
   }
 
@@ -424,15 +463,23 @@ static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs) {
 }
 
 static int exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers,
-                     Struct *structs) {
+                     Struct *structs, int depth) {
   int errors = 0;
 
   for (; stmt != NULL; stmt = stmt->next) {
-    if (stmt->type == NODE_PRINT_STMT)
-      errors += print_template(stmt->decl.print_stmt.value->decl.string_value,
-                               bindings, stmt->line);
-    else if (stmt->type == NODE_EMIT)
-      errors += emit_event(stmt, handlers, structs);
+    if (stmt->type == NODE_PRINT_STMT) {
+      ASTNode *value = stmt->decl.print_stmt.value;
+      if (value == NULL || value->type != NODE_STRING_LITERAL) {
+        // unreachable: check_statement rejects non-string prints first
+        fprintf(stderr, "error: line %d: cikle expects a string literal\n",
+                stmt->line);
+        errors++;
+        continue;
+      }
+      errors += print_template(value->decl.string_value, bindings, stmt->line);
+    } else if (stmt->type == NODE_EMIT) {
+      errors += emit_event(stmt, handlers, structs, depth + 1);
+    }
   }
 
   return errors;
@@ -495,7 +542,7 @@ int run_program(ASTNode *program) {
   int run_errors = 0;
   for (ASTNode *node = program; node != NULL; node = node->next) {
     if (node->type == NODE_EMIT)
-      run_errors += emit_event(node, handlers, structs);
+      run_errors += emit_event(node, handlers, structs, 0);
   }
 
   free_structs(structs);
