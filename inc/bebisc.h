@@ -140,6 +140,7 @@ void print_ast(ASTNode *node, int indent);
 typedef struct {
   Token *tokens;
   int current;
+  int had_error;
 } Parser;
 
 Token advance(Parser *parser);

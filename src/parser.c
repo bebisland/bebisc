@@ -1,4 +1,5 @@
 #include "bebisc.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -304,7 +305,6 @@ static ASTNode *parse_declaration(Parser *parser) {
   case TOKEN_PIRT:
     return parse_emit(parser);
   default:
-    advance(parser);
     return NULL;
   }
 }
@@ -316,7 +316,10 @@ ASTNode *parse_program(Parser *parser) {
   while (!is_at_end(parser)) {
     ASTNode *node = parse_declaration(parser);
     if (node == NULL) {
-      // TODO: error info
+      Token token = peek(parser);
+      fprintf(stderr, "error: line %d: unexpected '%s'\n", token.line,
+              token.lex);
+      parser->had_error = 1;
       break;
     }
     append(&head, &tail, node);

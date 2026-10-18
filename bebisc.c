@@ -45,8 +45,13 @@ int main(int argc, char **argv) {
   int token_count = 0;
   Token *tokens = tokenize(source, &token_count);
 
-  Parser parser = {tokens, 0};
+  Parser parser = {tokens, 0, 0};
   ASTNode *root = parse_program(&parser);
+
+  if (parser.had_error) {
+    free(source);
+    return 1;
+  }
 
 #ifdef DEBUG
   print_ast(root, 0);
