@@ -24,6 +24,16 @@ static void print_value(ASTNode *node) {
     printf("%s.%s\n", node->decl.member_access.object->decl.identifier.name,
            node->decl.member_access.member);
     break;
+  case NODE_VAR_REF:
+    printf("$%s\n", node->decl.var_ref.name);
+    break;
+  case NODE_INDEX:
+    printf("$%s[%d]\n",
+           node->decl.index.object->type == NODE_VAR_REF
+               ? node->decl.index.object->decl.var_ref.name
+               : "?",
+           node->decl.index.index);
+    break;
   case NODE_STRING_LITERAL:
     printf("\"%s\"\n", node->decl.string_value);
     break;
@@ -92,6 +102,26 @@ void print_ast(ASTNode *node, int indent) {
       printf("arg: %s = ", node->decl.emit_arg.name);
       print_value(node->decl.emit_arg.value);
       break;
+    case NODE_VAR_REF:
+      printf("ref: $%s\n", node->decl.var_ref.name);
+      break;
+    case NODE_INDEX:
+      printf("index: [%d]\n", node->decl.index.index);
+      print_ast(node->decl.index.object, indent + 2);
+      break;
+    case NODE_FIELD_SET:
+      printf("set field: %s = ", node->decl.field_set.name);
+      print_value(node->decl.field_set.value);
+      break;
+    case NODE_INDEX_SET:
+      printf("set index: $%s[%d] = ", node->decl.index_set.name,
+             node->decl.index_set.index);
+      print_value(node->decl.index_set.value);
+      break;
+    case NODE_FLOW:
+      printf("flow: ye ~> $%s\n", node->decl.flow.name);
+      print_ast(node->decl.flow.args, indent + 2);
+      break;
     default:
       printf("unknown ast node\n");
       break;
@@ -147,6 +177,24 @@ void free_ast(ASTNode *node) {
     case NODE_MEMBER_ACCESS:
       free_ast(node->decl.member_access.object);
       free(node->decl.member_access.member);
+      break;
+    case NODE_VAR_REF:
+      free(node->decl.var_ref.name);
+      break;
+    case NODE_INDEX:
+      free_ast(node->decl.index.object);
+      break;
+    case NODE_FIELD_SET:
+      free(node->decl.field_set.name);
+      free_ast(node->decl.field_set.value);
+      break;
+    case NODE_INDEX_SET:
+      free(node->decl.index_set.name);
+      free_ast(node->decl.index_set.value);
+      break;
+    case NODE_FLOW:
+      free(node->decl.flow.name);
+      free_ast(node->decl.flow.args);
       break;
     case NODE_STRING_LITERAL:
       free(node->decl.string_value);

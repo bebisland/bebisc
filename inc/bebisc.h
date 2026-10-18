@@ -13,6 +13,7 @@ typedef enum {
   TOKEN_FALIM,      // bool
   TOKEN_PAMUKSEKER, // float
   TOKEN_CIKLET,     // string
+  TOKEN_YE,         // create a variable
 
   TOKEN_IDENTIFIER, // name for enum/struct/field vb.
   TOKEN_NUMBER,
@@ -20,14 +21,18 @@ typedef enum {
   TOKEN_BOOL,
   TOKEN_STRING,
 
-  TOKEN_COLON,  // :
-  TOKEN_ASSIGN, // =
-  TOKEN_COMMA,  // ,
-  TOKEN_DOT,    // .
-  TOKEN_LPAREN, // (
-  TOKEN_RPAREN, // )
-  TOKEN_LBRACE, // {
-  TOKEN_RBRACE, // }
+  TOKEN_COLON,    // :
+  TOKEN_ASSIGN,   // =
+  TOKEN_COMMA,    // ,
+  TOKEN_DOT,      // .
+  TOKEN_LPAREN,   // (
+  TOKEN_RPAREN,   // )
+  TOKEN_LBRACE,   // {
+  TOKEN_RBRACE,   // }
+  TOKEN_LBRACKET, // [
+  TOKEN_RBRACKET, // ]
+  TOKEN_DOLLAR,   // $
+  TOKEN_WOW,      // :o
 
   TOKEN_EOF,
   TOKEN_UNKNOWN
@@ -59,7 +64,14 @@ typedef enum {
   NODE_EMIT_ARG, // name = value
 
   NODE_IDENTIFIER,
-  NODE_MEMBER_ACCESS, // enum.member
+  NODE_MEMBER_ACCESS, // Enum.Member
+
+  NODE_VAR_REF, // $name
+  NODE_INDEX,   // $name[i]
+
+  NODE_FIELD_SET, // name = value (handler: struct field)
+  NODE_INDEX_SET, // $name[i] = value
+  NODE_FLOW,      // ye(v1, v2, ...) :o $name
 
   NODE_STRING_LITERAL,
   NODE_NUMBER_LITERAL,
@@ -124,6 +136,31 @@ typedef struct ASTNode {
       struct ASTNode *object;
       char *member;
     } member_access;
+
+    struct {
+      char *name;
+    } var_ref;
+
+    struct {
+      struct ASTNode *object;
+      int index;
+    } index;
+
+    struct {
+      char *name;
+      struct ASTNode *value;
+    } field_set;
+
+    struct {
+      char *name;
+      int index;
+      struct ASTNode *value;
+    } index_set;
+
+    struct {
+      char *name;
+      struct ASTNode *args;
+    } flow;
 
     char *string_value;
     int number_value;

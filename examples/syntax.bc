@@ -1,17 +1,32 @@
-pudra MilkType {
+pudra SutAromasi {
     Cikolata,
     Cilek,
     Muz,
 }
 
-petibor Milk {
-    owner: ciklet
-    type: MilkType
-    count: bonibon
+petibor Sut {
+    kimin: ciklet
+    neli: SutAromasi
+    ne_kadar: bonibon
 }
 
-kokla(Milk, id="cikolatali_sutler") {
-    cikle("{owner} {count} sutu var")
+ye(3, SutAromasi.Cikolata) :o $bebisin_sutu
+
+kokla(Sut, id="cikolatali_sutler") {
+    cikle("{kimin} {ne_kadar} sutu var")
+    cikle("degisken olan bebis: {$bebisin_sutu[0]}, {$bebisin_sutu[1]}")
+
+    ne_kadar = 9
+    cikle("ne kadar var: {ne_kadar}")
+
+    $bebisin_sutu[0] = 4
+    ye(SutAromasi.Muz) :o $son_tip
 }
 
-pirt(Milk, { owner="bebis", count=3, type=MilkType.Cikolata }, id="cikolatali_sutler")
+pirt(Sut, {
+    kimin = "bebis",
+    ne_kadar = $bebisin_sutu[0],
+    neli = $bebisin_sutu[1]
+}, id="cikolatali_sutler")
+
+cikle("son: {$bebisin_sutu[0]}")

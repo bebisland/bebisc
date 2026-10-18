@@ -23,7 +23,9 @@ static TokenType check_keyword(const char *text) {
     return TOKEN_PAMUKSEKER;
   if (strcmp(text, "ciklet") == 0)
     return TOKEN_CIKLET;
-  if (strcmp(text, "true") == 0 || strcmp(text, "false") == 0)
+  if (strcmp(text, "ye") == 0)
+    return TOKEN_YE;
+  if (strcmp(text, "pipi") == 0 || strcmp(text, "popo") == 0)
     return TOKEN_BOOL;
   return TOKEN_IDENTIFIER;
 }
@@ -88,6 +90,11 @@ Token *tokenize(const char *source, int *out_count) {
 
     switch (c) {
     case ':':
+      if (cursor + 1 < len && source[cursor + 1] == 'o') {
+        add_token(&list, TOKEN_WOW, slice(source, cursor, cursor + 2), line);
+        cursor += 2;
+        continue;
+      }
       add_token(&list, TOKEN_COLON, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
@@ -117,6 +124,18 @@ Token *tokenize(const char *source, int *out_count) {
       continue;
     case '}':
       add_token(&list, TOKEN_RBRACE, slice(source, cursor, cursor + 1), line);
+      cursor++;
+      continue;
+    case '[':
+      add_token(&list, TOKEN_LBRACKET, slice(source, cursor, cursor + 1), line);
+      cursor++;
+      continue;
+    case ']':
+      add_token(&list, TOKEN_RBRACKET, slice(source, cursor, cursor + 1), line);
+      cursor++;
+      continue;
+    case '$':
+      add_token(&list, TOKEN_DOLLAR, slice(source, cursor, cursor + 1), line);
       cursor++;
       continue;
     case ';':
@@ -154,10 +173,11 @@ Token *tokenize(const char *source, int *out_count) {
       continue;
     }
 
-    if (isalpha((unsigned char)c) || c == '_') {
+    if (isalpha((unsigned char)c) || c == '_' || ((unsigned char)c & 0x80)) {
       int start = cursor;
-      while (cursor < len && (isalnum((unsigned char)source[cursor]) ||
-                              source[cursor] == '_')) {
+      while (cursor < len &&
+             (isalnum((unsigned char)source[cursor]) || source[cursor] == '_' ||
+              ((unsigned char)source[cursor] & 0x80))) {
         cursor++;
       }
       char *lex = slice(source, start, cursor);

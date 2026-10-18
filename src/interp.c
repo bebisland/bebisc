@@ -1,4 +1,5 @@
 #include "bebisc.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,9 +10,10 @@ typedef enum {
   VALUE_BOOL,
   VALUE_STRING,
   VALUE_MEMBER,
+  VALUE_TUPLE, // result of ye(...)
 } ValueType;
 
-typedef struct {
+typedef struct Value {
   ValueType type;
 
   int number;
@@ -21,7 +23,14 @@ typedef struct {
   const char *string;
 
   const char *member;
+
+  struct Tuple *tuple;
 } Value;
+
+typedef struct Tuple {
+  Value *items;
+  int count;
+} Tuple;
 
 typedef struct Binding {
   const char *name;
@@ -39,16 +48,33 @@ typedef struct Struct {
   struct Struct *next;
 } Struct;
 
-static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs,
-                      int depth);
-static int exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers,
-                     Struct *structs, int depth);
+typedef struct {
+  Binding *fields;
+  Binding *vars;
+} Scope;
+
+typedef struct {
+  Handler *handlers;
+  Struct *structs;
+  Binding *globals;
+} Runtime;
 
 // guards against handlers that keep emitting their own event
 #define MAX_EVENT_DEPTH 256
 
+static int eval_value(ASTNode *node, Scope *scope, Runtime *runtime,
+                      Value *out);
+static int emit_event(ASTNode *emit, Scope *scope, Runtime *runtime, int depth);
+static int exec_statement(ASTNode *stmt, Scope *scope, Runtime *runtime,
+                          int depth, int in_handler);
+
+static Value value_nil(void) {
+  Value value = {.type = VALUE_STRING, .string = ""};
+  return value;
+}
+
 static Value value_from_node(ASTNode *node) {
-  Value value = {VALUE_STRING, 0, 0.0f, 0, "", NULL};
+  Value value = value_nil();
 
   if (node == NULL)
     return value;
@@ -86,6 +112,45 @@ static Value value_from_node(ASTNode *node) {
   return value;
 }
 
+// values whose meaning depends on runtime state
+static int is_dynamic_expr(ASTNode *node) {
+  if (node == NULL)
+    return 0;
+
+  switch (node->type) {
+  case NODE_VAR_REF:
+  case NODE_INDEX:
+  case NODE_IDENTIFIER:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static Value value_clone(Value value) {
+  if (value.type == VALUE_TUPLE) {
+    Tuple *copy = malloc(sizeof(Tuple));
+    copy->count = value.tuple->count;
+    copy->items = malloc(sizeof(Value) * (size_t)copy->count);
+    for (int i = 0; i < copy->count; i++)
+      copy->items[i] = value_clone(value.tuple->items[i]);
+    value.tuple = copy;
+  }
+
+  // strings and members are borrowed from the AST and stay shared
+  return value;
+}
+
+// only tuples own memory everything else is borrowed
+static void value_free(Value value) {
+  if (value.type == VALUE_TUPLE) {
+    for (int i = 0; i < value.tuple->count; i++)
+      value_free(value.tuple->items[i]);
+    free(value.tuple->items);
+    free(value.tuple);
+  }
+}
+
 static void value_print(Value value) {
   switch (value.type) {
   case VALUE_NUMBER:
@@ -103,6 +168,15 @@ static void value_print(Value value) {
   case VALUE_MEMBER:
     printf("%s.%s", value.string, value.member);
     break;
+  case VALUE_TUPLE:
+    putchar('(');
+    for (int i = 0; i < value.tuple->count; i++) {
+      if (i > 0)
+        printf(", ");
+      value_print(value.tuple->items[i]);
+    }
+    putchar(')');
+    break;
   }
 }
 
@@ -114,9 +188,10 @@ static Binding *bind_add(Binding *list, const char *name, Value value) {
   return binding;
 }
 
-static void bindings_free(Binding *list) {
+static void vars_free(Binding *list) {
   while (list != NULL) {
     Binding *next = list->next;
+    value_free(list->value);
     free(list);
     list = next;
   }
@@ -129,6 +204,13 @@ static Binding *bindings_find(Binding *list, const char *name, size_t length) {
       return binding;
   }
   return NULL;
+}
+
+static Binding *find_var(const char *name, Scope *scope, Binding *globals) {
+  Binding *var = bindings_find(scope->vars, name, strlen(name));
+  if (var != NULL)
+    return var;
+  return bindings_find(globals, name, strlen(name));
 }
 
 static ASTNode *find_emit_arg(ASTNode *args, const char *name) {
@@ -189,28 +271,106 @@ static const char *value_type_name(Value value) {
     return "ciklet";
   case VALUE_MEMBER:
     return value.string;
+  case VALUE_TUPLE:
+    return "ye";
   }
   return "?";
 }
 
 static int make_default(const char *type_name, Value *out) {
   if (strcmp(type_name, "bonibon") == 0) {
-    *out = (Value){VALUE_NUMBER, 0, 0.0f, 0, "", NULL};
+    *out = (Value){.type = VALUE_NUMBER};
     return 1;
   }
   if (strcmp(type_name, "pamukseker") == 0) {
-    *out = (Value){VALUE_FLOAT, 0, 0.0f, 0, "", NULL};
+    *out = (Value){.type = VALUE_FLOAT};
     return 1;
   }
   if (strcmp(type_name, "falim") == 0) {
-    *out = (Value){VALUE_BOOL, 0, 0.0f, 0, "", NULL};
+    *out = (Value){.type = VALUE_BOOL};
     return 1;
   }
   if (strcmp(type_name, "ciklet") == 0) {
-    *out = (Value){VALUE_STRING, 0, 0.0f, 0, "", NULL};
+    *out = (Value){.type = VALUE_STRING, .string = ""};
     return 1;
   }
-  return 0;
+
+  *out = (Value){.type = VALUE_MEMBER, .string = type_name, .member = ""};
+  return 1;
+}
+
+static int eval_value(ASTNode *node, Scope *scope, Runtime *runtime,
+                      Value *out) {
+  *out = value_nil();
+
+  if (node == NULL)
+    return 0;
+
+  switch (node->type) {
+  case NODE_VAR_REF: {
+    Binding *var = find_var(node->decl.var_ref.name, scope, runtime->globals);
+    if (var == NULL) {
+      fprintf(stderr, "error: line %d: undefined variable '$%s'\n", node->line,
+              node->decl.var_ref.name);
+      return 1;
+    }
+    *out = value_clone(var->value);
+    return 0;
+  }
+  case NODE_INDEX: {
+    Value object;
+    if (eval_value(node->decl.index.object, scope, runtime, &object))
+      return 1;
+
+    if (object.type != VALUE_TUPLE) {
+      fprintf(stderr, "error: line %d: only ye() values can be indexed\n",
+              node->line);
+      value_free(object);
+      return 1;
+    }
+
+    int index = node->decl.index.index;
+    if (index < 0 || index >= object.tuple->count) {
+      fprintf(stderr, "error: line %d: index %d out of range (0..%d)\n",
+              node->line, index, object.tuple->count - 1);
+      value_free(object);
+      return 1;
+    }
+
+    *out = value_clone(object.tuple->items[index]);
+    value_free(object);
+    return 0;
+  }
+  case NODE_IDENTIFIER: {
+    const char *name = node->decl.identifier.name;
+    Binding *field = bindings_find(scope->fields, name, strlen(name));
+    if (field == NULL) {
+      fprintf(stderr, "error: line %d: unknown identifier '%s'\n", node->line,
+              name);
+      return 1;
+    }
+    *out = value_clone(field->value);
+    return 0;
+  }
+  default:
+    *out = value_from_node(node);
+    return 0;
+  }
+}
+
+static void var_store(const char *name, Value value, Scope *scope,
+                      Runtime *runtime, int in_handler) {
+  Binding *var = find_var(name, scope, runtime->globals);
+  if (var != NULL) {
+    value_free(var->value);
+    var->value = value;
+    return;
+  }
+
+  if (in_handler)
+    scope->vars = bind_add(scope->vars, name, value);
+  else
+    runtime->globals = bind_add(runtime->globals, name, value);
 }
 
 static int check_field(ASTNode *schema, const char *name, ASTNode *value_node,
@@ -222,7 +382,7 @@ static int check_field(ASTNode *schema, const char *name, ASTNode *value_node,
     return 1;
   }
 
-  if (value_node == NULL)
+  if (value_node == NULL || is_dynamic_expr(value_node))
     return 0;
 
   Value value = value_from_node(value_node);
@@ -259,8 +419,8 @@ static int check_handler_body(ASTNode *handler, ASTNode *schema) {
         continue;
 
       size_t len = (size_t)(end - i - 1);
-      if (find_field_len(schema->decl.struct_decl.fields, &text[i + 1], len) ==
-          NULL) {
+      if (text[i + 1] != '$' && find_field_len(schema->decl.struct_decl.fields,
+                                               &text[i + 1], len) == NULL) {
         fprintf(stderr, "error: line %d: unknown binding '{%.*s}'\n",
                 stmt->line, (int)len, &text[i + 1]);
         errors++;
@@ -292,6 +452,30 @@ static int check_emit_node(ASTNode *node, Struct *structs) {
   return errors;
 }
 
+static int check_field_set(ASTNode *stmt, ASTNode *schema) {
+  const char *name = stmt->decl.field_set.name;
+  ASTNode *field = find_field(schema->decl.struct_decl.fields, name);
+
+  if (field == NULL) {
+    fprintf(stderr, "error: line %d: struct '%s' has no field '%s'\n",
+            stmt->line, schema->decl.struct_decl.name, name);
+    return 1;
+  }
+
+  ASTNode *value = stmt->decl.field_set.value;
+  if (value != NULL && !is_dynamic_expr(value)) {
+    Value static_value = value_from_node(value);
+    if (!type_accepts(field->decl.struct_field.type_name, static_value)) {
+      fprintf(stderr, "error: line %d: field '%s' expects %s, got %s\n",
+              stmt->line, name, field->decl.struct_field.type_name,
+              value_type_name(static_value));
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
 static int check_statement(ASTNode *stmt, Struct *structs) {
   if (stmt->type == NODE_EMIT)
     return check_emit_node(stmt, structs);
@@ -303,7 +487,9 @@ static int check_statement(ASTNode *stmt, Struct *structs) {
               stmt->line);
       return 1;
     }
+    return 0;
   }
+
   return 0;
 }
 
@@ -311,8 +497,8 @@ static int check_program(ASTNode *program, Struct *structs) {
   int errors = 0;
 
   for (ASTNode *node = program; node != NULL; node = node->next) {
-    if (node->type == NODE_EMIT) {
-      errors += check_emit_node(node, structs);
+    if (node->type == NODE_EMIT || node->type == NODE_PRINT_STMT) {
+      errors += check_statement(node, structs);
     } else if (node->type == NODE_EVENT_HANDLER) {
       const char *type_name = node->decl.event_handler.type_name;
       ASTNode *schema = find_struct_by_name(structs, type_name);
@@ -327,23 +513,35 @@ static int check_program(ASTNode *program, Struct *structs) {
       errors += check_handler_body(node, schema);
 
       for (ASTNode *stmt = node->decl.event_handler.body; stmt != NULL;
-           stmt = stmt->next)
-        errors += check_statement(stmt, structs);
+           stmt = stmt->next) {
+        if (stmt->type == NODE_FIELD_SET)
+          errors += check_field_set(stmt, schema);
+        else
+          errors += check_statement(stmt, structs);
+      }
     }
   }
 
   return errors;
 }
 
-static const char *event_id(ASTNode *args) {
+static int event_id(ASTNode *args, Scope *scope, Runtime *runtime,
+                    const char **out) {
+  *out = NULL;
+
   ASTNode *arg = find_emit_arg(args, "id");
   if (arg == NULL)
-    return NULL;
+    return 0;
 
-  Value value = value_from_node(arg->decl.emit_arg.value);
-  if (value.type != VALUE_STRING)
-    return NULL;
-  return value.string;
+  Value value;
+  if (eval_value(arg->decl.emit_arg.value, scope, runtime, &value))
+    return 1;
+
+  if (value.type == VALUE_STRING)
+    *out = value.string; // borrowed from the AST
+
+  value_free(value);
+  return 0;
 }
 
 static int handler_matches(ASTNode *handler, const char *id) {
@@ -356,7 +554,70 @@ static int handler_matches(ASTNode *handler, const char *id) {
   return strcmp(expected, id) == 0;
 }
 
-static int print_template(const char *text, Binding *bindings, int line) {
+static ASTNode *parse_ref_text(const char *text, size_t len, int line) {
+  if (len < 2 || text[0] != '$')
+    return NULL;
+
+  size_t i = 1;
+  while (i < len && (isalnum((unsigned char)text[i]) || text[i] == '_' ||
+                     ((unsigned char)text[i] & 0x80)))
+    i++;
+
+  if (i == 1)
+    return NULL;
+
+  ASTNode *node = ast_node_new(NODE_VAR_REF);
+  node->line = line;
+  node->decl.var_ref.name = strndup(&text[1], i - 1);
+
+  while (i < len) {
+    if (text[i] != '[')
+      break;
+
+    i++;
+    size_t start = i;
+    int index = 0;
+    while (i < len && isdigit((unsigned char)text[i])) {
+      index = index * 10 + (text[i] - '0');
+      i++;
+    }
+    if (i == start || i >= len || text[i] != ']') {
+      free_ast(node);
+      return NULL;
+    }
+    i++; // ']'
+
+    ASTNode *index_node = ast_node_new(NODE_INDEX);
+    index_node->line = line;
+    index_node->decl.index.object = node;
+    index_node->decl.index.index = index;
+    node = index_node;
+  }
+
+  if (i != len) {
+    free_ast(node);
+    return NULL;
+  }
+
+  return node;
+}
+
+static int template_ref(const char *text, size_t len, Scope *scope,
+                        Runtime *runtime, int line, Value *out) {
+  ASTNode *ref = parse_ref_text(text, len, line);
+  if (ref == NULL) {
+    fprintf(stderr, "error: line %d: bad reference '{%.*s}'\n", line, (int)len,
+            text);
+    return 1;
+  }
+
+  int errors = eval_value(ref, scope, runtime, out);
+  free_ast(ref);
+  return errors;
+}
+
+static int print_template(const char *text, Scope *scope, Runtime *runtime,
+                          int line) {
   for (int i = 0; text[i] != '\0'; i++) {
     if (text[i] != '{')
       continue;
@@ -369,7 +630,13 @@ static int print_template(const char *text, Binding *bindings, int line) {
       continue;
 
     size_t len = (size_t)(end - i - 1);
-    if (bindings_find(bindings, &text[i + 1], len) == NULL) {
+
+    if (text[i + 1] == '$') {
+      Value value;
+      if (template_ref(&text[i + 1], len, scope, runtime, line, &value))
+        return 1;
+      value_free(value);
+    } else if (bindings_find(scope->fields, &text[i + 1], len) == NULL) {
       fprintf(stderr, "error: line %d: no value for '{%.*s}'\n", line, (int)len,
               &text[i + 1]);
       return 1;
@@ -388,10 +655,20 @@ static int print_template(const char *text, Binding *bindings, int line) {
       end++;
 
     if (text[end] == '}') {
-      Binding *binding =
-          bindings_find(bindings, &text[i + 1], (size_t)(end - i - 1));
-      if (binding != NULL)
-        value_print(binding->value);
+      size_t len = (size_t)(end - i - 1);
+
+      if (text[i + 1] == '$') {
+        Value value;
+        if (template_ref(&text[i + 1], len, scope, runtime, line, &value) ==
+            0) {
+          value_print(value);
+          value_free(value);
+        }
+      } else {
+        Binding *field = bindings_find(scope->fields, &text[i + 1], len);
+        if (field != NULL)
+          value_print(field->value);
+      }
       i = end;
     } else {
       putchar(text[i]);
@@ -401,7 +678,9 @@ static int print_template(const char *text, Binding *bindings, int line) {
   return 0;
 }
 
-static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args) {
+static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args,
+                                    Scope *scope, Runtime *runtime, int line,
+                                    int *errors) {
   Binding *bindings = NULL;
 
   for (ASTNode *field = schema->decl.struct_decl.fields; field != NULL;
@@ -412,10 +691,20 @@ static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args) {
     ASTNode *arg = find_emit_arg(args, name);
     Value value;
 
-    if (arg != NULL)
-      value = value_from_node(arg->decl.emit_arg.value);
-    else if (!make_default(type, &value))
-      continue;
+    if (arg != NULL) {
+      if (eval_value(arg->decl.emit_arg.value, scope, runtime, &value)) {
+        (*errors)++;
+        make_default(type, &value);
+      } else if (!type_accepts(type, value)) {
+        fprintf(stderr, "error: line %d: field '%s' expects %s, got %s\n", line,
+                name, type, value_type_name(value));
+        value_free(value);
+        (*errors)++;
+        make_default(type, &value);
+      }
+    } else {
+      make_default(type, &value);
+    }
 
     bindings = bind_add(bindings, name, value);
   }
@@ -423,11 +712,10 @@ static Binding *bind_handler_fields(ASTNode *schema, ASTNode *args) {
   return bindings;
 }
 
-static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs,
+static int emit_event(ASTNode *emit, Scope *scope, Runtime *runtime,
                       int depth) {
   const char *type_name = emit->decl.emit.type_name;
   ASTNode *args = emit->decl.emit.args;
-  const char *id = event_id(args);
 
   if (depth > MAX_EVENT_DEPTH) {
     fprintf(stderr,
@@ -436,16 +724,17 @@ static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs,
     return 1;
   }
 
-  ASTNode *schema = find_struct_by_name(structs, type_name);
+  ASTNode *schema = find_struct_by_name(runtime->structs, type_name);
   if (schema == NULL) {
-    // unreachable: check_program rejects unknown event types first
     fprintf(stderr, "error: line %d: unknown event type '%s'\n", emit->line,
             type_name);
     return 1;
   }
 
-  int errors = 0;
-  for (Handler *h = handlers; h != NULL; h = h->next) {
+  const char *id = NULL;
+  int errors = event_id(args, scope, runtime, &id);
+
+  for (Handler *h = runtime->handlers; h != NULL; h = h->next) {
     ASTNode *handler = h->node;
 
     if (strcmp(handler->decl.event_handler.type_name, type_name) != 0)
@@ -453,36 +742,119 @@ static int emit_event(ASTNode *emit, Handler *handlers, Struct *structs,
     if (!handler_matches(handler, id))
       continue;
 
-    Binding *bindings = bind_handler_fields(schema, args);
-    errors += exec_body(handler->decl.event_handler.body, bindings, handlers,
-                        structs, depth);
-    bindings_free(bindings);
+    int bind_errors = 0;
+    Binding *fields = bind_handler_fields(schema, args, scope, runtime,
+                                          emit->line, &bind_errors);
+    errors += bind_errors;
+
+    Scope handler_scope = {.fields = fields, .vars = NULL};
+    for (ASTNode *stmt = handler->decl.event_handler.body; stmt != NULL;
+         stmt = stmt->next)
+      errors += exec_statement(stmt, &handler_scope, runtime, depth, 1);
+
+    vars_free(handler_scope.vars);
+    vars_free(fields);
   }
 
   return errors;
 }
 
-static int exec_body(ASTNode *stmt, Binding *bindings, Handler *handlers,
-                     Struct *structs, int depth) {
-  int errors = 0;
-
-  for (; stmt != NULL; stmt = stmt->next) {
-    if (stmt->type == NODE_PRINT_STMT) {
-      ASTNode *value = stmt->decl.print_stmt.value;
-      if (value == NULL || value->type != NODE_STRING_LITERAL) {
-        // unreachable: check_statement rejects non-string prints first
-        fprintf(stderr, "error: line %d: cikle expects a string literal\n",
-                stmt->line);
-        errors++;
-        continue;
-      }
-      errors += print_template(value->decl.string_value, bindings, stmt->line);
-    } else if (stmt->type == NODE_EMIT) {
-      errors += emit_event(stmt, handlers, structs, depth + 1);
+static int exec_statement(ASTNode *stmt, Scope *scope, Runtime *runtime,
+                          int depth, int in_handler) {
+  if (stmt->type == NODE_PRINT_STMT) {
+    ASTNode *value = stmt->decl.print_stmt.value;
+    if (value == NULL || value->type != NODE_STRING_LITERAL) {
+      fprintf(stderr, "error: line %d: cikle expects a string literal\n",
+              stmt->line);
+      return 1;
     }
+    return print_template(value->decl.string_value, scope, runtime, stmt->line);
   }
 
-  return errors;
+  if (stmt->type == NODE_EMIT)
+    return emit_event(stmt, scope, runtime, depth + 1);
+
+  if (stmt->type == NODE_FLOW) {
+    int count = 0;
+    for (ASTNode *arg = stmt->decl.flow.args; arg != NULL; arg = arg->next)
+      count++;
+
+    Tuple *tuple = malloc(sizeof(Tuple));
+    tuple->count = count;
+    tuple->items = malloc(sizeof(Value) * (size_t)count);
+
+    int errors = 0;
+    int i = 0;
+    for (ASTNode *arg = stmt->decl.flow.args; arg != NULL;
+         arg = arg->next, i++) {
+      if (eval_value(arg, scope, runtime, &tuple->items[i])) {
+        tuple->items[i] = value_nil();
+        errors++;
+      }
+    }
+
+    if (errors > 0) {
+      value_free((Value){.type = VALUE_TUPLE, .tuple = tuple});
+      return errors;
+    }
+
+    var_store(stmt->decl.flow.name,
+              (Value){.type = VALUE_TUPLE, .tuple = tuple}, scope, runtime,
+              in_handler);
+    return 0;
+  }
+
+  if (stmt->type == NODE_INDEX_SET) {
+    const char *name = stmt->decl.index_set.name;
+
+    Binding *var = find_var(name, scope, runtime->globals);
+    if (var == NULL) {
+      fprintf(stderr, "error: line %d: undefined variable '$%s'\n", stmt->line,
+              name);
+      return 1;
+    }
+    if (var->value.type != VALUE_TUPLE) {
+      fprintf(stderr, "error: line %d: '$%s' is not a ye() value\n", stmt->line,
+              name);
+      return 1;
+    }
+
+    int index = stmt->decl.index_set.index;
+    if (index < 0 || index >= var->value.tuple->count) {
+      fprintf(stderr, "error: line %d: index %d out of range (0..%d)\n",
+              stmt->line, index, var->value.tuple->count - 1);
+      return 1;
+    }
+
+    Value value;
+    if (eval_value(stmt->decl.index_set.value, scope, runtime, &value))
+      return 1;
+
+    value_free(var->value.tuple->items[index]);
+    var->value.tuple->items[index] = value;
+    return 0;
+  }
+
+  if (stmt->type == NODE_FIELD_SET) {
+    const char *name = stmt->decl.field_set.name;
+
+    Binding *field = bindings_find(scope->fields, name, strlen(name));
+    if (field == NULL) {
+      fprintf(stderr, "error: line %d: unknown identifier '%s'\n", stmt->line,
+              name);
+      return 1;
+    }
+
+    Value value;
+    if (eval_value(stmt->decl.field_set.value, scope, runtime, &value))
+      return 1;
+
+    value_free(field->value);
+    field->value = value;
+    return 0;
+  }
+
+  return 0;
 }
 
 static void free_structs(Struct *list) {
@@ -532,6 +904,9 @@ int run_program(ASTNode *program) {
     }
   }
 
+  Runtime runtime = {.handlers = handlers, .structs = structs, .globals = NULL};
+  Scope top_scope = {.fields = NULL, .vars = NULL};
+
   int errors = check_program(program, structs);
   if (errors > 0) {
     free_structs(structs);
@@ -541,10 +916,21 @@ int run_program(ASTNode *program) {
 
   int run_errors = 0;
   for (ASTNode *node = program; node != NULL; node = node->next) {
-    if (node->type == NODE_EMIT)
-      run_errors += emit_event(node, handlers, structs, 0);
+    switch (node->type) {
+    case NODE_EMIT:
+      run_errors += emit_event(node, &top_scope, &runtime, 0);
+      break;
+    case NODE_PRINT_STMT:
+    case NODE_FLOW:
+    case NODE_INDEX_SET:
+      run_errors += exec_statement(node, &top_scope, &runtime, 0, 0);
+      break;
+    default:
+      break;
+    }
   }
 
+  vars_free(runtime.globals);
   free_structs(structs);
   free_handlers(handlers);
 
